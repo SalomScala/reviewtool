@@ -1,0 +1,32 @@
+<idea-plugin>
+    <id>de.setsoftware.reviewtool</id>
+    <name>CoRT - Code Review Tool</name>
+    <vendor url="https://github.com/tobiasbaum/reviewtool">CoRT Team</vendor>
+
+    <description><![CDATA[
+        CoRT (Code Review Tool) supports change-based code reviews directly in the IDE.
+        It loads the tickets to review from YouTrack, determines the commits belonging
+        to a ticket from the Git history (via JGit), lets you navigate the changed files,
+        and stores review remarks and the review result back in the YouTrack ticket.
+        <br/><br/>
+        Configure the YouTrack connection under
+        <b>Settings | Tools | Code Review Tool (CoRT)</b>.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow
+                id="CoRT"
+                anchor="bottom"
+                icon="AllIcons.Toolwindows.ToolWindowChanges"
+                factoryClass="de.setsoftware.reviewtool.intellij.ReviewToolWindowFactory"/>
+        <projectConfigurable
+                parentId="tools"
+                id="de.setsoftware.reviewtool.intellij.settings"
+                displayName="Code Review Tool (CoRT)"
+                nonDefaultProject="true"
+                instance="de.setsoftware.reviewtool.intellij.ReviewToolConfigurable"/>
+        <notificationGroup id="CoRT" displayType="BALLOON"/>
+    </extensions>
+</idea-plugin>

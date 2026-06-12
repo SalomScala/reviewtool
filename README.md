@@ -4,9 +4,36 @@ CoRT's aim is to spear-head a new generation of "cognitive support code review t
 
 CoRT is built to support "change-based code review", which means that the portions of the code that have to be reviewed are extracted from changes in a source code repository. It currently supports Subversion, but is extensible in this regard.
 
-Modern IDEs already provide a lot of support in understanding source code (linking between caller and callee, syntax highlighting, ...). Therefore CoRT is implemented as a plugin for the Eclipse IDE.
+Modern IDEs already provide a lot of support in understanding source code (linking between caller and callee, syntax highlighting, ...). Therefore CoRT is implemented as an IDE plugin. Historically it was an Eclipse plugin; the repository now also contains an IntelliJ plugin that reuses the platform-independent core.
 
-## Installation
+## The IntelliJ plugin
+
+The IntelliJ plugin lives in a Gradle build (`settings.gradle.kts` in the repository root) with two projects:
+
+- `reviewtool-core`: the platform-independent core, assembled directly from the sources of the pre-existing OSGi modules (`de.setsoftware.reviewtool.core.model`, `...reviewdata`, `...ordering`, `...changesources.git`, `...ticketconnectors.file`, `...ticketconnectors.jira` and the new `...ticketconnectors.youtrack`). It contains the Git access (via JGit) and the ticket system access (YouTrack, Jira and file based).
+- `reviewtool-intellij`: the IntelliJ-specific UI layer (tool window, settings page, background job and logging adapters), built with the [IntelliJ Platform Gradle Plugin](https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin.html).
+
+### Building
+
+    ./gradlew :reviewtool-core:test                 # build and test the platform-independent core
+    ./gradlew :reviewtool-intellij:buildPlugin      # build the IntelliJ plugin zip (needs access to *.jetbrains.com)
+    ./gradlew :reviewtool-intellij:runIde           # start a sandbox IDE with the plugin for manual testing
+
+The plugin zip is created in `reviewtool-intellij/build/distributions` and can be installed via "Settings | Plugins | Install Plugin from Disk...".
+
+### Features and configuration
+
+The IntelliJ plugin supports the central review workflow:
+
+- Tickets to review (or to fix) are loaded from **YouTrack** (REST API, authentication with a permanent token).
+- The commits belonging to a ticket are determined from the **Git** history (via JGit, by matching the commit messages against a configurable pattern containing the ticket key).
+- The tool window ("CoRT") lists the tickets, shows the commits and changed files of the selected ticket (double click opens the file), lets you edit the review remarks and start/end the review. Review remarks and state transitions are written back to the YouTrack ticket.
+
+Configure the connection under "Settings | Tools | Code Review Tool (CoRT)": YouTrack URL, permanent token (stored in the IDE's password safe), the name of the text custom field for review remarks, the state names of your workflow and the search queries for the ticket filters.
+
+The Eclipse-specific UI features (review remark markers, tour ordering UI, summaries, telemetry) have not been ported yet. The new YouTrack connector (`de.setsoftware.reviewtool.ticketconnectors.youtrack`) is platform-independent and also provides an `IConfigurator` for the XML configuration mechanism (element `youtrackTicketStore`), so it can be used from the Eclipse side as well.
+
+## Installation (Eclipse)
 
 Download the Eclipse update site zip from the "releases" page or build it yourself by calling "./mvnw install". Then install it to Eclipse in the usual way.
 
