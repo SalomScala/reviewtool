@@ -1,0 +1,412 @@
+package de.setsoftware.reviewtool.intellij;
+
+import java.awt.BorderLayout;
+import java.awt.FlowLayout;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.io.File;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+
+import javax.swing.JButton;
+import javax.swing.JComboBox;
+import javax.swing.JPanel;
+import javax.swing.JSplitPane;
+import javax.swing.JTextArea;
+import javax.swing.JTree;
+import javax.swing.ListSelectionModel;
+import javax.swing.table.AbstractTableModel;
+import javax.swing.tree.DefaultMutableTreeNode;
+import javax.swing.tree.DefaultTreeModel;
+
+import com.intellij.ide.BrowserUtil;
+import com.intellij.notification.NotificationGroupManager;
+import com.intellij.notification.NotificationType;
+import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.fileEditor.FileEditorManager;
+import com.intellij.openapi.progress.ProcessCanceledException;
+import com.intellij.openapi.progress.ProgressIndicator;
+import com.intellij.openapi.progress.Task;
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.vfs.LocalFileSystem;
+import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.ui.components.JBScrollPane;
+import com.intellij.ui.table.JBTable;
+
+import de.setsoftware.reviewtool.model.EndTransition;
+import de.setsoftware.reviewtool.model.ITicketData;
+import de.setsoftware.reviewtool.model.TicketInfo;
+import de.setsoftware.reviewtool.model.api.IChange;
+import de.setsoftware.reviewtool.model.api.IChangeData;
+import de.setsoftware.reviewtool.model.api.ICommit;
+import de.setsoftware.reviewtool.ticketconnectors.youtrack.YouTrackConnector;
+
+/**
+ * The content of the CoRT tool window: a list of tickets, the commits/files belonging
+ * to the selected ticket and an editor for the review remarks.
+ */
+public class ReviewToolPanel extends JPanel {
+
+    private static final long serialVersionUID = 7882988395724508758L;
+
+    /**
+     * Table model for the loaded tickets.
+     */
+    private static final class TicketTableModel extends AbstractTableModel {
+
+        private static final long serialVersionUID = 1378391971397208329L;
+
+        private static final String[] COLUMNS = {"Key", "Summary", "State", "Component"};
+
+        private List<TicketInfo> tickets = new ArrayList<>();
+
+        public void setTickets(List<TicketInfo> tickets) {
+            this.tickets = tickets;
+            this.fireTableDataChanged();
+        }
+
+        public TicketInfo getTicket(int row) {
+            return this.tickets.get(row);
+        }
+
+        @Override
+        public int getRowCount() {
+            return this.tickets.size();
+        }
+
+        @Override
+        public int getColumnCount() {
+            return COLUMNS.length;
+        }
+
+        @Override
+        public String getColumnName(int column) {
+            return COLUMNS[column];
+        }
+
+        @Override
+        public Object getValueAt(int rowIndex, int columnIndex) {
+            final TicketInfo t = this.tickets.get(rowIndex);
+            switch (columnIndex) {
+            case 0:
+                return t.getId();
+            case 1:
+                return t.getSummaryIncludingParent();
+            case 2:
+                return t.getState();
+            default:
+                return t.getComponent();
+            }
+        }
+
+    }
+
+    /**
+     * User object for file nodes in the commit tree.
+     */
+    private static final class FileNode {
+        private final String label;
+        private final File localFile;
+
+        FileNode(String label, File localFile) {
+            this.label = label;
+            this.localFile = localFile;
+        }
+
+        @Override
+        public String toString() {
+            return this.label;
+        }
+    }
+
+    private final Project project;
+    private final JComboBox<String> modeBox =
+            new JComboBox<>(new String[] {ReviewToolService.FILTER_REVIEW, ReviewToolService.FILTER_FIXING});
+    private final TicketTableModel ticketModel = new TicketTableModel();
+    private final JBTable ticketTable = new JBTable(this.ticketModel);
+    private final DefaultMutableTreeNode treeRoot = new DefaultMutableTreeNode("No ticket selected");
+    private final DefaultTreeModel treeModel = new DefaultTreeModel(this.treeRoot);
+    private final JTree commitTree = new JTree(this.treeModel);
+    private final JTextArea remarksArea = new JTextArea();
+
+    public ReviewToolPanel(Project project) {
+        super(new BorderLayout());
+        this.project = project;
+        this.buildUi();
+    }
+
+    private void buildUi() {
+        final JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        toolbar.add(this.modeBox);
+        final JButton refreshButton = new JButton("Refresh Tickets");
+        refreshButton.addActionListener((e) -> this.refreshTickets());
+        toolbar.add(refreshButton);
+        final JButton startButton = new JButton("Start Review/Fixing");
+        startButton.addActionListener((e) -> this.startWorkOnSelectedTicket());
+        toolbar.add(startButton);
+        final JButton endButton = new JButton("End Review...");
+        endButton.addActionListener((e) -> this.endReviewForSelectedTicket());
+        toolbar.add(endButton);
+        final JButton openButton = new JButton("Open in YouTrack");
+        openButton.addActionListener((e) -> this.openSelectedTicketInBrowser());
+        toolbar.add(openButton);
+        this.add(toolbar, BorderLayout.NORTH);
+
+        this.ticketTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        this.ticketTable.getSelectionModel().addListSelectionListener((e) -> {
+            if (!e.getValueIsAdjusting()) {
+                this.loadDetailsForSelectedTicket();
+            }
+        });
+
+        this.commitTree.setRootVisible(true);
+        this.commitTree.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (e.getClickCount() == 2) {
+                    ReviewToolPanel.this.openSelectedFile();
+                }
+            }
+        });
+
+        this.remarksArea.setLineWrap(true);
+        this.remarksArea.setWrapStyleWord(true);
+        final JPanel remarksPanel = new JPanel(new BorderLayout());
+        remarksPanel.add(new JBScrollPane(this.remarksArea), BorderLayout.CENTER);
+        final JButton saveRemarksButton = new JButton("Save Remarks to Ticket");
+        saveRemarksButton.addActionListener((e) -> this.saveRemarksForSelectedTicket());
+        remarksPanel.add(saveRemarksButton, BorderLayout.SOUTH);
+
+        final JSplitPane rightSplit = new JSplitPane(
+                JSplitPane.VERTICAL_SPLIT,
+                new JBScrollPane(this.commitTree),
+                remarksPanel);
+        rightSplit.setResizeWeight(0.6);
+        final JSplitPane mainSplit = new JSplitPane(
+                JSplitPane.HORIZONTAL_SPLIT,
+                new JBScrollPane(this.ticketTable),
+                rightSplit);
+        mainSplit.setResizeWeight(0.4);
+        this.add(mainSplit, BorderLayout.CENTER);
+    }
+
+    private ReviewToolService getService() {
+        return ReviewToolService.getInstance(this.project);
+    }
+
+    private String getSelectedTicketKey() {
+        final int viewRow = this.ticketTable.getSelectedRow();
+        if (viewRow < 0) {
+            return null;
+        }
+        return this.ticketModel.getTicket(this.ticketTable.convertRowIndexToModel(viewRow)).getId();
+    }
+
+    private void showError(String message, Throwable exception) {
+        de.setsoftware.reviewtool.base.Logger.warn(message, exception);
+        ApplicationManager.getApplication().invokeLater(() ->
+                NotificationGroupManager.getInstance().getNotificationGroup("CoRT")
+                        .createNotification("Code Review Tool", message + ": " + exception, NotificationType.ERROR)
+                        .notify(this.project));
+    }
+
+    /**
+     * Loads the tickets for the currently selected filter in the background.
+     */
+    public void refreshTickets() {
+        final String filterName = (String) this.modeBox.getSelectedItem();
+        new Task.Backgroundable(this.project, "Loading tickets from YouTrack", true) {
+            @Override
+            public void run(ProgressIndicator indicator) {
+                try {
+                    final YouTrackConnector connector =
+                            ReviewToolPanel.this.getService().createTicketConnector();
+                    final List<TicketInfo> tickets = connector.getTicketsForFilter(filterName);
+                    ApplicationManager.getApplication().invokeLater(() ->
+                            ReviewToolPanel.this.ticketModel.setTickets(tickets));
+                } catch (final RuntimeException e) {
+                    ReviewToolPanel.this.showError("Could not load tickets from YouTrack", e);
+                }
+            }
+        }.queue();
+    }
+
+    private void loadDetailsForSelectedTicket() {
+        final String key = this.getSelectedTicketKey();
+        if (key == null) {
+            return;
+        }
+        new Task.Backgroundable(this.project, "Loading details for " + key, true) {
+            @Override
+            public void run(ProgressIndicator indicator) {
+                ReviewToolPanel.this.loadRemarks(key);
+                ReviewToolPanel.this.loadChanges(key, indicator);
+            }
+        }.queue();
+    }
+
+    private void loadRemarks(String key) {
+        try {
+            final ITicketData ticket = this.getService().createTicketConnector().loadTicket(key);
+            final String remarks = ticket == null ? "" : ticket.getReviewData();
+            ApplicationManager.getApplication().invokeLater(() -> this.remarksArea.setText(remarks));
+        } catch (final RuntimeException e) {
+            this.showError("Could not load review remarks for " + key, e);
+        }
+    }
+
+    private void loadChanges(String key, ProgressIndicator indicator) {
+        try {
+            final IChangeData changes = this.getService().getRepositoryChanges(
+                    key, new ChangeSourceUiAdapter(this.project, indicator));
+            final DefaultMutableTreeNode newRoot = this.buildCommitTree(key, changes);
+            ApplicationManager.getApplication().invokeLater(() -> {
+                this.treeModel.setRoot(newRoot);
+                for (int i = 0; i < this.commitTree.getRowCount(); i++) {
+                    this.commitTree.expandRow(i);
+                }
+            });
+        } catch (final ProcessCanceledException e) {
+            throw e;
+        } catch (final Exception e) {
+            this.showError("Could not determine Git changes for " + key, e);
+        }
+    }
+
+    private DefaultMutableTreeNode buildCommitTree(String key, IChangeData changes) {
+        final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm");
+        final DefaultMutableTreeNode root = new DefaultMutableTreeNode(
+                key + " (" + changes.getMatchedCommits().size() + " commits)");
+        for (final ICommit commit : changes.getMatchedCommits()) {
+            final String firstLine = commit.getMessage().split("\n")[0];
+            final DefaultMutableTreeNode commitNode = new DefaultMutableTreeNode(
+                    dateFormat.format(commit.getTime()) + "  " + firstLine);
+            final Set<String> seenPaths = new LinkedHashSet<>();
+            for (final IChange change : commit.getChanges()) {
+                final String path = change.getTo().getPath();
+                if (seenPaths.add(path)) {
+                    commitNode.add(new DefaultMutableTreeNode(new FileNode(
+                            path,
+                            change.getTo().toLocalPath(change.getWorkingCopy()))));
+                }
+            }
+            root.add(commitNode);
+        }
+        return root;
+    }
+
+    private void openSelectedFile() {
+        final Object node = this.commitTree.getLastSelectedPathComponent();
+        if (!(node instanceof DefaultMutableTreeNode)) {
+            return;
+        }
+        final Object userObject = ((DefaultMutableTreeNode) node).getUserObject();
+        if (!(userObject instanceof FileNode)) {
+            return;
+        }
+        final File file = ((FileNode) userObject).localFile;
+        final VirtualFile virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(file);
+        if (virtualFile == null) {
+            Messages.showInfoMessage(this.project,
+                    "The file " + file + " does not exist in the working copy (anymore).",
+                    "Code Review Tool");
+            return;
+        }
+        FileEditorManager.getInstance(this.project).openFile(virtualFile, true);
+    }
+
+    private void startWorkOnSelectedTicket() {
+        final String key = this.getSelectedTicketKey();
+        if (key == null) {
+            return;
+        }
+        final boolean review = ReviewToolService.FILTER_REVIEW.equals(this.modeBox.getSelectedItem());
+        new Task.Backgroundable(this.project, "Changing ticket state of " + key, true) {
+            @Override
+            public void run(ProgressIndicator indicator) {
+                try {
+                    final YouTrackConnector connector =
+                            ReviewToolPanel.this.getService().createTicketConnector();
+                    if (review) {
+                        connector.startReviewing(key);
+                    } else {
+                        connector.startFixing(key);
+                    }
+                } catch (final RuntimeException e) {
+                    ReviewToolPanel.this.showError("Could not change state of " + key, e);
+                }
+            }
+        }.queue();
+    }
+
+    private void endReviewForSelectedTicket() {
+        final String key = this.getSelectedTicketKey();
+        if (key == null) {
+            return;
+        }
+        final String remarks = this.remarksArea.getText();
+        new Task.Backgroundable(this.project, "Ending review for " + key, true) {
+            @Override
+            public void run(ProgressIndicator indicator) {
+                try {
+                    final YouTrackConnector connector =
+                            ReviewToolPanel.this.getService().createTicketConnector();
+                    final List<EndTransition> transitions = connector.getPossibleTransitionsForReviewEnd(key);
+                    final String[] options = new String[transitions.size()];
+                    for (int i = 0; i < transitions.size(); i++) {
+                        options[i] = transitions.get(i).getNameForUser();
+                    }
+                    final int[] choice = new int[] {-1};
+                    ApplicationManager.getApplication().invokeAndWait(() ->
+                            choice[0] = Messages.showChooseDialog(
+                                    ReviewToolPanel.this.project,
+                                    "Choose the new state for " + key + ":",
+                                    "End Review",
+                                    null,
+                                    options,
+                                    options.length > 0 ? options[0] : null));
+                    if (choice[0] < 0) {
+                        return;
+                    }
+                    connector.saveReviewData(key, remarks);
+                    connector.changeStateAtReviewEnd(key, transitions.get(choice[0]));
+                    ReviewToolPanel.this.refreshTickets();
+                } catch (final RuntimeException e) {
+                    ReviewToolPanel.this.showError("Could not end review for " + key, e);
+                }
+            }
+        }.queue();
+    }
+
+    private void saveRemarksForSelectedTicket() {
+        final String key = this.getSelectedTicketKey();
+        if (key == null) {
+            return;
+        }
+        final String remarks = this.remarksArea.getText();
+        new Task.Backgroundable(this.project, "Saving review remarks for " + key, true) {
+            @Override
+            public void run(ProgressIndicator indicator) {
+                try {
+                    ReviewToolPanel.this.getService().createTicketConnector().saveReviewData(key, remarks);
+                } catch (final RuntimeException e) {
+                    ReviewToolPanel.this.showError("Could not save review remarks for " + key, e);
+                }
+            }
+        }.queue();
+    }
+
+    private void openSelectedTicketInBrowser() {
+        final String key = this.getSelectedTicketKey();
+        if (key == null) {
+            return;
+        }
+        BrowserUtil.browse(
+                this.getService().createTicketConnector().getLinkSettings().createLinkFor(key));
+    }
+
+}

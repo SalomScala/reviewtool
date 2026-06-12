@@ -7,3 +7,9 @@
 /ucdetector_reports/
 /de.setsoftware.reviewtool.changesources.git.tests/*.cache
 /.idea
+.gradle/
+build/
+/reviewtool-core/*.cache
+reviewtool-core/build/
+reviewtool-intellij/build/
+reviewtool-intellij/.intellijPlatform/
