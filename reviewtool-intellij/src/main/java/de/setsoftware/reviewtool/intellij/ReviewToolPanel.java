@@ -7,6 +7,7 @@ import java.awt.event.MouseEvent;
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -15,6 +16,7 @@ import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JPanel;
 import javax.swing.JSplitPane;
+import javax.swing.JTabbedPane;
 import javax.swing.JTextArea;
 import javax.swing.JTree;
 import javax.swing.ListSelectionModel;
@@ -26,6 +28,8 @@ import com.intellij.ide.BrowserUtil;
 import com.intellij.notification.NotificationGroupManager;
 import com.intellij.notification.NotificationType;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.ProgressIndicator;
@@ -43,6 +47,14 @@ import de.setsoftware.reviewtool.model.TicketInfo;
 import de.setsoftware.reviewtool.model.api.IChange;
 import de.setsoftware.reviewtool.model.api.IChangeData;
 import de.setsoftware.reviewtool.model.api.ICommit;
+import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
+import de.setsoftware.reviewtool.model.remarks.DummyMarker;
+import de.setsoftware.reviewtool.model.remarks.FileLinePosition;
+import de.setsoftware.reviewtool.model.remarks.IReviewMarker;
+import de.setsoftware.reviewtool.model.remarks.Position;
+import de.setsoftware.reviewtool.model.remarks.RemarkType;
+import de.setsoftware.reviewtool.model.remarks.ReviewData;
+import de.setsoftware.reviewtool.model.remarks.ReviewRemark;
 import de.setsoftware.reviewtool.ticketconnectors.youtrack.YouTrackConnector;
 
 /**
@@ -132,10 +144,17 @@ public class ReviewToolPanel extends JPanel {
     private final DefaultTreeModel treeModel = new DefaultTreeModel(this.treeRoot);
     private final JTree commitTree = new JTree(this.treeModel);
     private final JTextArea remarksArea = new JTextArea();
+    private final IntellijMarkerFactory markerFactory;
+    private final ReviewToursPanel toursPanel;
+
+    private volatile IChangeData lastLoadedChanges;
+    private volatile String lastLoadedKey;
 
     public ReviewToolPanel(Project project) {
         super(new BorderLayout());
         this.project = project;
+        this.markerFactory = new IntellijMarkerFactory(project);
+        this.toursPanel = new ReviewToursPanel(project, this.markerFactory);
         this.buildUi();
     }
 
@@ -154,6 +173,18 @@ public class ReviewToolPanel extends JPanel {
         final JButton openButton = new JButton("Open in YouTrack");
         openButton.addActionListener((e) -> this.openSelectedTicketInBrowser());
         toolbar.add(openButton);
+        final JButton buildToursButton = new JButton("Create Tours");
+        buildToursButton.addActionListener((e) -> this.createToursForSelectedTicket());
+        toolbar.add(buildToursButton);
+        final JButton showMarkersButton = new JButton("Show Remark Markers");
+        showMarkersButton.addActionListener((e) -> this.showRemarkMarkers());
+        toolbar.add(showMarkersButton);
+        final JButton addRemarkButton = new JButton("Add Remark at Cursor");
+        addRemarkButton.addActionListener((e) -> this.addRemarkAtCursor());
+        toolbar.add(addRemarkButton);
+        final JButton clearMarkersButton = new JButton("Clear Markers");
+        clearMarkersButton.addActionListener((e) -> this.clearAllMarkers());
+        toolbar.add(clearMarkersButton);
         this.add(toolbar, BorderLayout.NORTH);
 
         this.ticketTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
@@ -186,10 +217,15 @@ public class ReviewToolPanel extends JPanel {
                 new JBScrollPane(this.commitTree),
                 remarksPanel);
         rightSplit.setResizeWeight(0.6);
+
+        final JTabbedPane rightTabs = new JTabbedPane();
+        rightTabs.addTab("Changes", rightSplit);
+        rightTabs.addTab("Tours", this.toursPanel);
+
         final JSplitPane mainSplit = new JSplitPane(
                 JSplitPane.HORIZONTAL_SPLIT,
                 new JBScrollPane(this.ticketTable),
-                rightSplit);
+                rightTabs);
         mainSplit.setResizeWeight(0.4);
         this.add(mainSplit, BorderLayout.CENTER);
     }
@@ -263,6 +299,8 @@ public class ReviewToolPanel extends JPanel {
         try {
             final IChangeData changes = this.getService().getRepositoryChanges(
                     key, new ChangeSourceUiAdapter(this.project, indicator));
+            this.lastLoadedChanges = changes;
+            this.lastLoadedKey = key;
             final DefaultMutableTreeNode newRoot = this.buildCommitTree(key, changes);
             ApplicationManager.getApplication().invokeLater(() -> {
                 this.treeModel.setRoot(newRoot);
@@ -407,6 +445,119 @@ public class ReviewToolPanel extends JPanel {
         }
         BrowserUtil.browse(
                 this.getService().createTicketConnector().getLinkSettings().createLinkFor(key));
+    }
+
+    /**
+     * Builds the review tours for the changes of the currently selected ticket and shows them in
+     * the "Tours" tab.
+     */
+    private void createToursForSelectedTicket() {
+        final IChangeData changes = this.lastLoadedChanges;
+        if (changes == null) {
+            Messages.showInfoMessage(this.project,
+                    "Please select a ticket first so that its changes can be loaded.",
+                    "Code Review Tool");
+            return;
+        }
+        final String key = this.lastLoadedKey;
+        new Task.Backgroundable(this.project, "Creating review tours for " + key, true) {
+            @Override
+            public void run(ProgressIndicator indicator) {
+                try {
+                    final ToursInReview tours = ReviewToolPanel.this.getService().createTours(
+                            changes, new ChangeSourceUiAdapter(ReviewToolPanel.this.project, indicator));
+                    if (tours == null) {
+                        return;
+                    }
+                    ApplicationManager.getApplication().invokeLater(
+                            () -> ReviewToolPanel.this.toursPanel.setTours(tours));
+                } catch (final ProcessCanceledException e) {
+                    throw e;
+                } catch (final RuntimeException e) {
+                    ReviewToolPanel.this.showError("Could not create tours for " + key, e);
+                }
+            }
+        }.queue();
+    }
+
+    /**
+     * Parses the review remarks currently shown in the editor and renders them as markers in the
+     * editor gutters.
+     */
+    private void showRemarkMarkers() {
+        final String remarks = this.remarksArea.getText();
+        new Task.Backgroundable(this.project, "Loading review remark markers", false) {
+            @Override
+            public void run(ProgressIndicator indicator) {
+                try {
+                    ReviewToolPanel.this.markerFactory.clearReviewMarkers();
+                    ReviewData.parse(
+                            Collections.<Integer, String>emptyMap(),
+                            ReviewToolPanel.this.markerFactory,
+                            remarks);
+                    ReviewToolPanel.this.markerFactory.renderReviewMarkers();
+                } catch (final RuntimeException e) {
+                    ReviewToolPanel.this.showError("Could not parse review remarks", e);
+                }
+            }
+        }.queue();
+    }
+
+    private void clearAllMarkers() {
+        this.markerFactory.clearReviewMarkers();
+        this.markerFactory.clearStopMarkers();
+    }
+
+    /**
+     * Adds a new review remark at the caret position of the currently active editor and merges it
+     * into the review remarks text.
+     */
+    private void addRemarkAtCursor() {
+        final Editor editor = FileEditorManager.getInstance(this.project).getSelectedTextEditor();
+        if (editor == null) {
+            Messages.showInfoMessage(this.project,
+                    "Please open a file and place the caret where the remark should be added.",
+                    "Code Review Tool");
+            return;
+        }
+        final VirtualFile file = FileDocumentManager.getInstance().getFile(editor.getDocument());
+        if (file == null) {
+            return;
+        }
+        final int line = editor.getCaretModel().getLogicalPosition().line + 1;
+
+        final String text = Messages.showInputDialog(this.project,
+                "Remark for " + file.getName() + ":" + line, "Add Review Remark", null);
+        if (text == null || text.trim().isEmpty()) {
+            return;
+        }
+        final RemarkType[] types = RemarkType.values();
+        final String[] typeNames = new String[types.length];
+        for (int i = 0; i < types.length; i++) {
+            typeNames[i] = types[i].name();
+        }
+        final int typeChoice = Messages.showChooseDialog(this.project,
+                "Type of the remark:", "Add Review Remark", null, typeNames, typeNames[0]);
+        if (typeChoice < 0) {
+            return;
+        }
+
+        try {
+            final Position pos = new FileLinePosition(file.getName(), line);
+            final IReviewMarker marker = this.markerFactory.createMarker(pos);
+            final ReviewRemark remark = ReviewRemark.create(
+                    marker, System.getProperty("user.name", "reviewer"), pos, text.trim(), types[typeChoice]);
+
+            final ReviewData reviewData = ReviewData.parse(
+                    Collections.<Integer, String>emptyMap(),
+                    DummyMarker.FACTORY,
+                    this.remarksArea.getText());
+            reviewData.merge(remark, 1);
+            this.remarksArea.setText(reviewData.serialize());
+            this.markerFactory.renderReviewMarkers();
+        } catch (final RuntimeException e) {
+            this.showError("Could not add review remark", e);
+        }
     }
 
 }

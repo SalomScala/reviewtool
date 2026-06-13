@@ -28,10 +28,12 @@ The IntelliJ plugin supports the central review workflow:
 - Tickets to review (or to fix) are loaded from **YouTrack** (REST API, authentication with a permanent token).
 - The commits belonging to a ticket are determined from the **Git** history (via JGit, by matching the commit messages against a configurable pattern containing the ticket key).
 - The tool window ("CoRT") lists the tickets, shows the commits and changed files of the selected ticket (double click opens the file), lets you edit the review remarks and start/end the review. Review remarks and state transitions are written back to the YouTrack ticket.
+- **Review tours** can be created from the changes of the selected ticket ("Create Tours"). The "Tours" tab shows the tours and their stops as a tree; the top-level tours can be reordered ("Move Tour Up/Down"), a tour can be activated, and double clicking a stop opens the file at the right position. The stops of the active tour are marked with a gutter icon in the editors.
+- **Review remark markers** are shown in the editor gutters: "Show Remark Markers" parses the current review remarks and renders them, "Add Remark at Cursor" creates a new remark at the caret position (with a remark type) and merges it into the review remarks, and "Clear Markers" removes all markers again.
 
 Configure the connection under "Settings | Tools | Code Review Tool (CoRT)": YouTrack URL, permanent token (stored in the IDE's password safe), the name of the text custom field for review remarks, the state names of your workflow and the search queries for the ticket filters.
 
-The Eclipse-specific UI features (review remark markers, tour ordering UI, summaries, telemetry) have not been ported yet. The new YouTrack connector (`de.setsoftware.reviewtool.ticketconnectors.youtrack`) is platform-independent and also provides an `IConfigurator` for the XML configuration mechanism (element `youtrackTicketStore`), so it can be used from the Eclipse side as well.
+The review remark markers and the tour ordering UI have been ported to IntelliJ (see above); the markers are transient editor highlighters instead of persisted workspace markers. The (potentially long running) change classification and tour clustering/restructuring strategies of the Eclipse UI as well as summaries and telemetry are not wired up in the IntelliJ plugin yet, so the IntelliJ tours default to one tour per commit with the stops in their original order. The new YouTrack connector (`de.setsoftware.reviewtool.ticketconnectors.youtrack`) is platform-independent and also provides an `IConfigurator` for the XML configuration mechanism (element `youtrackTicketStore`), so it can be used from the Eclipse side as well.
 
 ## Installation (Eclipse)
 
