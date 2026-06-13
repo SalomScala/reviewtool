@@ -146,6 +146,7 @@ public class ReviewToolPanel extends JPanel {
     private final JTextArea remarksArea = new JTextArea();
     private final IntellijMarkerFactory markerFactory;
     private final ReviewToursPanel toursPanel;
+    private final ReviewSummaryPanel summaryPanel;
 
     private volatile IChangeData lastLoadedChanges;
     private volatile String lastLoadedKey;
@@ -155,6 +156,7 @@ public class ReviewToolPanel extends JPanel {
         this.project = project;
         this.markerFactory = new IntellijMarkerFactory(project);
         this.toursPanel = new ReviewToursPanel(project, this.markerFactory);
+        this.summaryPanel = new ReviewSummaryPanel(project);
         this.buildUi();
     }
 
@@ -221,6 +223,7 @@ public class ReviewToolPanel extends JPanel {
         final JTabbedPane rightTabs = new JTabbedPane();
         rightTabs.addTab("Changes", rightSplit);
         rightTabs.addTab("Tours", this.toursPanel);
+        rightTabs.addTab("Summary", this.summaryPanel);
 
         final JSplitPane mainSplit = new JSplitPane(
                 JSplitPane.HORIZONTAL_SPLIT,
@@ -469,8 +472,10 @@ public class ReviewToolPanel extends JPanel {
                     if (tours == null) {
                         return;
                     }
-                    ApplicationManager.getApplication().invokeLater(
-                            () -> ReviewToolPanel.this.toursPanel.setTours(tours));
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        ReviewToolPanel.this.toursPanel.setTours(tours);
+                        ReviewToolPanel.this.summaryPanel.setTours(tours);
+                    });
                 } catch (final ProcessCanceledException e) {
                     throw e;
                 } catch (final RuntimeException e) {
