@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import javax.swing.JButton;
 import javax.swing.JComboBox;
@@ -41,6 +42,7 @@ import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.table.JBTable;
 
+import de.setsoftware.reviewtool.changesources.git.GitCommitInfo;
 import de.setsoftware.reviewtool.model.EndTransition;
 import de.setsoftware.reviewtool.model.ITicketData;
 import de.setsoftware.reviewtool.model.TicketInfo;
@@ -175,6 +177,9 @@ public class ReviewToolPanel extends JPanel {
         final JButton openButton = new JButton("Open in YouTrack");
         openButton.addActionListener((e) -> this.openSelectedTicketInBrowser());
         toolbar.add(openButton);
+        final JButton reviewCommitsButton = new JButton("Review Commits (no ticket)");
+        reviewCommitsButton.addActionListener((e) -> this.reviewSelectedCommits());
+        toolbar.add(reviewCommitsButton);
         final JButton buildToursButton = new JButton("Create Tours");
         buildToursButton.addActionListener((e) -> this.createToursForSelectedTicket());
         toolbar.add(buildToursButton);
@@ -480,6 +485,66 @@ public class ReviewToolPanel extends JPanel {
                     throw e;
                 } catch (final RuntimeException e) {
                     ReviewToolPanel.this.showError("Could not create tours for " + key, e);
+                }
+            }
+        }.queue();
+    }
+
+    /**
+     * Lets the user select individual Git commits and loads their changes for review, without
+     * involving the ticket system.
+     */
+    private void reviewSelectedCommits() {
+        new Task.Backgroundable(this.project, "Loading recent commits", true) {
+            @Override
+            public void run(ProgressIndicator indicator) {
+                try {
+                    final List<GitCommitInfo> commits = ReviewToolPanel.this.getService()
+                            .getRecentCommits(200, new ChangeSourceUiAdapter(ReviewToolPanel.this.project, indicator));
+                    final AtomicReference<Set<String>> selected = new AtomicReference<>();
+                    ApplicationManager.getApplication().invokeAndWait(() -> {
+                        final SelectCommitsDialog dialog =
+                                new SelectCommitsDialog(ReviewToolPanel.this.project, commits);
+                        if (dialog.showAndGet()) {
+                            selected.set(dialog.getSelectedCommitIds());
+                        }
+                    });
+                    if (selected.get() != null && !selected.get().isEmpty()) {
+                        ReviewToolPanel.this.loadChangesForCommits(selected.get());
+                    }
+                } catch (final ProcessCanceledException e) {
+                    throw e;
+                } catch (final RuntimeException e) {
+                    ReviewToolPanel.this.showError("Could not load commits", e);
+                }
+            }
+        }.queue();
+    }
+
+    private void loadChangesForCommits(Set<String> revisionIds) {
+        new Task.Backgroundable(this.project, "Loading changes for selected commits", true) {
+            @Override
+            public void run(ProgressIndicator indicator) {
+                try {
+                    final IChangeData changes = ReviewToolPanel.this.getService().getChangesForCommits(
+                            revisionIds, new ChangeSourceUiAdapter(ReviewToolPanel.this.project, indicator));
+                    ReviewToolPanel.this.lastLoadedChanges = changes;
+                    ReviewToolPanel.this.lastLoadedKey = "Selected commits";
+                    final DefaultMutableTreeNode newRoot =
+                            ReviewToolPanel.this.buildCommitTree("Selected commits", changes);
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        ReviewToolPanel.this.treeModel.setRoot(newRoot);
+                        for (int i = 0; i < ReviewToolPanel.this.commitTree.getRowCount(); i++) {
+                            ReviewToolPanel.this.commitTree.expandRow(i);
+                        }
+                        ReviewToolPanel.this.remarksArea.setText(
+                                "Reviewing selected commits (no ticket). Use \"Create Tours\" to build the tours"
+                                + " and the \"Summary\" tab for an overview.");
+                    });
+                } catch (final ProcessCanceledException e) {
+                    throw e;
+                } catch (final Exception e) {
+                    ReviewToolPanel.this.showError("Could not load changes for selected commits", e);
                 }
             }
         }.queue();

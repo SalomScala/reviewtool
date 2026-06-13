@@ -62,6 +62,59 @@ public class GitChangeSource extends AbstractChangeSource {
         }
     }
 
+    /**
+     * Returns the most recent commits of the working copies (at most {@code max} per working copy),
+     * so that the user can pick individual commits for a ticket-less review.
+     */
+    public List<GitCommitInfo> getRecentCommits(final int max, final IChangeSourceUi ui)
+        throws ChangeSourceException {
+        try {
+            ui.subTask("Loading recent commits...");
+            final List<GitRevision> revisions = GitWorkingCopyManager.getInstance().listRecentRevisions(max, ui);
+            final List<GitCommitInfo> ret = new ArrayList<>();
+            for (final GitRevision r : revisions) {
+                ret.add(new GitCommitInfo(r.getRevisionString(), r.getAuthor(), r.getDate(), r.getMessage()));
+            }
+            return ret;
+        } catch (final IOException e) {
+            throw new ChangeSourceException(this, e);
+        }
+    }
+
+    /**
+     * Returns the changes for the explicitly selected commits (identified by their full hash),
+     * without involving any ticket system.
+     */
+    public IChangeData getChangesForCommits(final Set<String> revisionIds, final IChangeSourceUi ui)
+        throws ChangeSourceException {
+        try {
+            ui.subTask("Determining selected commits...");
+            final Map<GitRevision, String> revisions = this.determineRevisionsByIds(revisionIds, ui);
+            ui.subTask("Analyzing commits...");
+            final List<ICommit> commits =
+                    this.convertRepoRevisionsToChanges(new ArrayList<>(revisions.keySet()), ui);
+            return ChangestructureFactory.createChangeData(commits);
+        } catch (final IOException | GitAPIException e) {
+            throw new ChangeSourceException(this, e);
+        }
+    }
+
+    private Map<GitRevision, String> determineRevisionsByIds(
+            final Set<String> revisionIds,
+            final IChangeSourceUi ui) throws GitAPIException, IOException {
+
+        final HistoryFiller historyFiller = new HistoryFiller();
+        final Predicate<GitRevision> handler = (final GitRevision logEntry) -> {
+            historyFiller.register(logEntry);
+            return revisionIds.contains(logEntry.getRevisionString());
+        };
+
+        final Map<GitRevision, String> matchingEntries =
+                GitWorkingCopyManager.getInstance().traverseEntries(handler, ui);
+        historyFiller.populate(matchingEntries.keySet(), ui);
+        return matchingEntries;
+    }
+
     private List<GitRevision> checkBranches(Map<GitRevision, String> revisions, IChangeSourceUi ui) {
         final List<GitRevision> ret = new ArrayList<>();
         final List<GitRevision> nonHeadRevisions = new ArrayList<>();
