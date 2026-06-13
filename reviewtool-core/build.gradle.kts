@@ -37,6 +37,7 @@ sourceSets {
                     "../de.setsoftware.reviewtool.ticketconnectors.file/src",
                     "../de.setsoftware.reviewtool.ticketconnectors.jira/src",
                     "../de.setsoftware.reviewtool.ticketconnectors.youtrack/src",
+                    "../de.setsoftware.reviewtool.core.cognitive/src",
                 ),
             )
         }
@@ -57,6 +58,8 @@ sourceSets {
 dependencies {
     api("org.eclipse.jgit:org.eclipse.jgit:6.10.0.202406032230-r")
     api("com.eclipsesource.minimal-json:minimal-json:0.9.5")
+    // JavaParser is used by the cognitive support (change classification and stop ordering)
+    api("com.github.javaparser:javaparser-core:3.9.1")
     // checked-in library used by the telemetry support
     implementation(files("../de.setsoftware.reviewtool.core.model/hackybuffer-1.0.jar"))
 

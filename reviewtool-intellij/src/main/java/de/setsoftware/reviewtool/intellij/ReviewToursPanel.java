@@ -9,6 +9,7 @@ import java.util.Collections;
 import java.util.List;
 
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JTree;
@@ -68,6 +69,7 @@ public final class ReviewToursPanel extends JPanel {
     private final JLabel statusLabel = new JLabel("No tours created yet.");
 
     private ToursInReview tours;
+    private boolean hideIrrelevant;
 
     public ReviewToursPanel(Project project, IntellijMarkerFactory markerFactory) {
         super(new BorderLayout());
@@ -90,6 +92,12 @@ public final class ReviewToursPanel extends JPanel {
         final JButton refreshMarkersButton = new JButton("Refresh Stop Markers");
         refreshMarkersButton.addActionListener((e) -> this.renderStopMarkers());
         toolbar.add(refreshMarkersButton);
+        final JCheckBox hideIrrelevantBox = new JCheckBox("Hide irrelevant");
+        hideIrrelevantBox.addActionListener((e) -> {
+            this.hideIrrelevant = hideIrrelevantBox.isSelected();
+            this.rebuildTree();
+        });
+        toolbar.add(hideIrrelevantBox);
         this.add(toolbar, BorderLayout.NORTH);
 
         this.tree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
@@ -153,9 +161,17 @@ public final class ReviewToursPanel extends JPanel {
                 this.addChildren(subNode, subTour);
                 parentNode.add(subNode);
             } else if (element instanceof Stop) {
-                parentNode.add(new DefaultMutableTreeNode(new StopNode((Stop) element)));
+                final Stop stop = (Stop) element;
+                if (this.hideIrrelevant && this.isIrrelevant(stop)) {
+                    continue;
+                }
+                parentNode.add(new DefaultMutableTreeNode(new StopNode(stop)));
             }
         }
+    }
+
+    private boolean isIrrelevant(Stop stop) {
+        return this.tours != null && stop.isIrrelevantForReview(this.tours.getIrrelevantCategories());
     }
 
     private DefaultMutableTreeNode getSelectedNode() {
@@ -246,6 +262,9 @@ public final class ReviewToursPanel extends JPanel {
             final boolean isActive = tour.equals(active);
             final String description = firstLine(tour.getDescription());
             for (final Stop stop : tour.getStops()) {
+                if (this.isIrrelevant(stop)) {
+                    continue;
+                }
                 final com.intellij.openapi.vfs.VirtualFile vf =
                         IntellijFileResolver.findByAbsoluteFile(stop.getAbsoluteFile());
                 if (vf == null) {
@@ -295,7 +314,16 @@ public final class ReviewToursPanel extends JPanel {
                     this.setText((active ? "* " : "") + firstLine(tour.getDescription())
                             + "  (" + tour.getStops().size() + " stops)");
                 } else if (userObject instanceof StopNode) {
-                    this.setText(stopLabel(((StopNode) userObject).stop));
+                    final Stop stop = ((StopNode) userObject).stop;
+                    final StringBuilder text = new StringBuilder(stopLabel(stop));
+                    final String classification = stop.getClassificationFormatted().trim();
+                    if (!classification.isEmpty()) {
+                        text.append("  [").append(classification).append(']');
+                    }
+                    if (ReviewToursPanel.this.isIrrelevant(stop)) {
+                        text.append("  (irrelevant)");
+                    }
+                    this.setText(text.toString());
                 }
             }
             return this;
