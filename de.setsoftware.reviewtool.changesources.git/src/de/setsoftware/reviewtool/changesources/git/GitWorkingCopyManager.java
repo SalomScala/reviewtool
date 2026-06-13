@@ -91,6 +91,33 @@ final class GitWorkingCopyManager {
         this.wcPerRootDirectory.remove(workingCopyRoot.toString());
     }
 
+    /**
+     * Returns the most recent revisions (starting at HEAD of each working copy), at most
+     * {@code max} per working copy. Used to offer commits for a ticket-less review.
+     */
+    List<GitRevision> listRecentRevisions(int max, IChangeSourceUi ui) throws IOException {
+        final List<GitRevision> ret = new ArrayList<>();
+        for (final GitWorkingCopy wc : this.getWorkingCopies()) {
+            final Repository repository = wc.getRepository().getRepository();
+            final ObjectId head = repository.resolve(Constants.HEAD);
+            if (head == null) {
+                continue;
+            }
+            try (RevWalk revWalk = new RevWalk(repository)) {
+                revWalk.markStart(revWalk.parseCommit(head));
+                int count = 0;
+                for (final RevCommit commit : revWalk) {
+                    if (ui.isCanceled() || count >= max) {
+                        break;
+                    }
+                    ret.add(new GitRevision(wc, commit));
+                    count++;
+                }
+            }
+        }
+        return ret;
+    }
+
     Map<GitRevision, String> traverseEntries(Predicate<GitRevision> handler, IChangeSourceUi ui)
         throws GitAPIException, IOException {
 
