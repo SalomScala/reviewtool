@@ -2,6 +2,7 @@ package de.setsoftware.reviewtool.intellij;
 
 import java.awt.BorderLayout;
 import java.awt.FlowLayout;
+import java.awt.datatransfer.StringSelection;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.io.File;
@@ -32,6 +33,7 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
+import com.intellij.openapi.ide.CopyPasteManager;
 import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.Task;
@@ -149,6 +151,7 @@ public class ReviewToolPanel extends JPanel {
     private final IntellijMarkerFactory markerFactory;
     private final ReviewToursPanel toursPanel;
     private final ReviewSummaryPanel summaryPanel;
+    private final ReviewRemarksPanel remarksPanel;
 
     private volatile IChangeData lastLoadedChanges;
     private volatile String lastLoadedKey;
@@ -159,6 +162,10 @@ public class ReviewToolPanel extends JPanel {
         this.markerFactory = new IntellijMarkerFactory(project);
         this.toursPanel = new ReviewToursPanel(project, this.markerFactory);
         this.summaryPanel = new ReviewSummaryPanel(project);
+        this.remarksPanel = new ReviewRemarksPanel(
+                project,
+                () -> this.remarksArea.getText(),
+                (text) -> this.remarksArea.setText(text));
         this.buildUi();
     }
 
@@ -177,6 +184,9 @@ public class ReviewToolPanel extends JPanel {
         final JButton openButton = new JButton("Open in YouTrack");
         openButton.addActionListener((e) -> this.openSelectedTicketInBrowser());
         toolbar.add(openButton);
+        final JButton copyIdButton = new JButton("Copy ID");
+        copyIdButton.addActionListener((e) -> this.copySelectedTicketId());
+        toolbar.add(copyIdButton);
         final JButton reviewCommitsButton = new JButton("Review Commits (no ticket)");
         reviewCommitsButton.addActionListener((e) -> this.reviewSelectedCommits());
         toolbar.add(reviewCommitsButton);
@@ -228,6 +238,7 @@ public class ReviewToolPanel extends JPanel {
         final JTabbedPane rightTabs = new JTabbedPane();
         rightTabs.addTab("Changes", rightSplit);
         rightTabs.addTab("Tours", this.toursPanel);
+        rightTabs.addTab("Remarks", this.remarksPanel);
         rightTabs.addTab("Summary", this.summaryPanel);
 
         final JSplitPane mainSplit = new JSplitPane(
@@ -297,7 +308,10 @@ public class ReviewToolPanel extends JPanel {
         try {
             final ITicketData ticket = this.getService().createTicketConnector().loadTicket(key);
             final String remarks = ticket == null ? "" : ticket.getReviewData();
-            ApplicationManager.getApplication().invokeLater(() -> this.remarksArea.setText(remarks));
+            ApplicationManager.getApplication().invokeLater(() -> {
+                this.remarksArea.setText(remarks);
+                this.remarksPanel.reload();
+            });
         } catch (final RuntimeException e) {
             this.showError("Could not load review remarks for " + key, e);
         }
@@ -453,6 +467,14 @@ public class ReviewToolPanel extends JPanel {
         }
         BrowserUtil.browse(
                 this.getService().createTicketConnector().getLinkSettings().createLinkFor(key));
+    }
+
+    private void copySelectedTicketId() {
+        final String key = this.getSelectedTicketKey();
+        if (key == null) {
+            return;
+        }
+        CopyPasteManager.getInstance().setContents(new StringSelection(key));
     }
 
     /**
@@ -624,6 +646,7 @@ public class ReviewToolPanel extends JPanel {
                     this.remarksArea.getText());
             reviewData.merge(remark, 1);
             this.remarksArea.setText(reviewData.serialize());
+            this.remarksPanel.reload();
             this.markerFactory.renderReviewMarkers();
         } catch (final RuntimeException e) {
             this.showError("Could not add review remark", e);
