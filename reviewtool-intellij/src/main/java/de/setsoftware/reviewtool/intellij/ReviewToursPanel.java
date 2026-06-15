@@ -108,6 +108,9 @@ public final class ReviewToursPanel extends JPanel {
         final JButton showCodeButton = new JButton("Show Stop Code");
         showCodeButton.addActionListener((e) -> this.showSelectedStopCode());
         toolbar.add(showCodeButton);
+        final JButton showDiffButton = new JButton("Show Stop Diff");
+        showDiffButton.addActionListener((e) -> this.showSelectedStopDiff());
+        toolbar.add(showDiffButton);
         final JButton prevButton = new JButton("Previous Stop");
         prevButton.addActionListener((e) -> this.navigate(-1));
         toolbar.add(prevButton);
@@ -289,6 +292,13 @@ public final class ReviewToursPanel extends JPanel {
         }
     }
 
+    private void showSelectedStopDiff() {
+        final Stop stop = this.getSelectedStop();
+        if (stop != null) {
+            StopDiffViewer.show(this.project, stop);
+        }
+    }
+
     private Stop getSelectedStop() {
         final DefaultMutableTreeNode node = this.getSelectedNode();
         if (node != null && node.getUserObject() instanceof StopNode) {
@@ -312,6 +322,7 @@ public final class ReviewToursPanel extends JPanel {
         if (userObject instanceof StopNode) {
             final Stop stop = ((StopNode) userObject).stop;
             menu.add(menuItem("Show code", () -> this.jumpToStop(stop)));
+            menu.add(menuItem("Show diff", () -> StopDiffViewer.show(this.project, stop)));
             menu.add(menuItem("Open containing folder", () -> this.openContainingFolder(stop)));
             final boolean checked = this.checkedStops.contains(stop);
             menu.add(menuItem(checked ? "Unmark as checked" : "Mark as checked",
