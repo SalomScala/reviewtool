@@ -1,5 +1,6 @@
 package de.setsoftware.reviewtool.intellij;
 
+import java.awt.Color;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -12,11 +13,14 @@ import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.impl.DocumentMarkupModel;
 import com.intellij.openapi.editor.markup.GutterIconRenderer;
 import com.intellij.openapi.editor.markup.HighlighterLayer;
+import com.intellij.openapi.editor.markup.HighlighterTargetArea;
 import com.intellij.openapi.editor.markup.MarkupModel;
 import com.intellij.openapi.editor.markup.RangeHighlighter;
+import com.intellij.openapi.editor.markup.TextAttributes;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.ui.JBColor;
 
 import de.setsoftware.reviewtool.model.remarks.IMarkerFactory;
 import de.setsoftware.reviewtool.model.remarks.IReviewMarker;
@@ -35,6 +39,11 @@ import de.setsoftware.reviewtool.model.remarks.ReviewRemarkException;
  * methods.
  */
 public final class IntellijMarkerFactory implements IMarkerFactory {
+
+    private static final JBColor ACTIVE_BACKGROUND = new JBColor(new Color(0xD8E8FF), new Color(0x2E436E));
+    private static final JBColor INACTIVE_BACKGROUND = new JBColor(new Color(0xEDEDED), new Color(0x3A3C3F));
+    private static final JBColor ACTIVE_STRIPE = new JBColor(new Color(0x3E7BD6), new Color(0x5E8AD6));
+    private static final JBColor INACTIVE_STRIPE = new JBColor(new Color(0xB0B0B0), new Color(0x707070));
 
     private final Project project;
     private final List<IntellijReviewMarker> reviewMarkers = new ArrayList<>();
@@ -131,6 +140,39 @@ public final class IntellijMarkerFactory implements IMarkerFactory {
         final MarkupModel markup = DocumentMarkupModel.forDocument(doc, this.project, true);
         final RangeHighlighter highlighter =
                 markup.addLineHighlighter(lineIndex, HighlighterLayer.WARNING, null);
+        highlighter.setGutterIconRenderer(new CortGutterIconRenderer(icon, tooltip));
+        return new MarkerHandle(markup, highlighter);
+    }
+
+    /**
+     * Highlights the whole changed line range [fromLine, toLine] (1-based) of a tour stop in the
+     * editor: the lines get a background color, a mark in the scrollbar (error stripe) and a gutter
+     * icon, so the reviewer can see which relevant code locations were changed.
+     * Must be called on the EDT.
+     */
+    MarkerHandle showLineRangeMarker(
+            VirtualFile file, int fromLine, int toLine, Icon icon, String tooltip, boolean active) {
+        if (file == null) {
+            return null;
+        }
+        final Document doc = FileDocumentManager.getInstance().getDocument(file);
+        if (doc == null || doc.getLineCount() == 0) {
+            return null;
+        }
+        final int lastLine = doc.getLineCount() - 1;
+        final int from = Math.max(0, Math.min(fromLine - 1, lastLine));
+        final int to = Math.max(from, Math.min(toLine - 1, lastLine));
+        final MarkupModel markup = DocumentMarkupModel.forDocument(doc, this.project, true);
+        final TextAttributes attributes = new TextAttributes();
+        attributes.setBackgroundColor(active ? ACTIVE_BACKGROUND : INACTIVE_BACKGROUND);
+        final RangeHighlighter highlighter = markup.addRangeHighlighter(
+                doc.getLineStartOffset(from),
+                doc.getLineEndOffset(to),
+                HighlighterLayer.SELECTION - 1,
+                attributes,
+                HighlighterTargetArea.LINES_IN_RANGE);
+        highlighter.setErrorStripeMarkColor(active ? ACTIVE_STRIPE : INACTIVE_STRIPE);
+        highlighter.setErrorStripeTooltip(tooltip);
         highlighter.setGutterIconRenderer(new CortGutterIconRenderer(icon, tooltip));
         return new MarkerHandle(markup, highlighter);
     }
