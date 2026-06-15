@@ -17,7 +17,12 @@ import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreeSelectionModel;
 
+import com.intellij.openapi.editor.Document;
+import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.fileEditor.FileEditorManager;
+import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.components.JBScrollPane;
 
 import de.setsoftware.reviewtool.model.api.IFragment;
@@ -89,6 +94,9 @@ public final class ReviewToursPanel extends JPanel {
         final JButton activateButton = new JButton("Activate Tour");
         activateButton.addActionListener((e) -> this.activateSelectedTour());
         toolbar.add(activateButton);
+        final JButton showCodeButton = new JButton("Show Stop Code");
+        showCodeButton.addActionListener((e) -> this.showSelectedStopCode());
+        toolbar.add(showCodeButton);
         final JButton refreshMarkersButton = new JButton("Refresh Stop Markers");
         refreshMarkersButton.addActionListener((e) -> this.renderStopMarkers());
         toolbar.add(refreshMarkersButton);
@@ -229,18 +237,37 @@ public final class ReviewToursPanel extends JPanel {
         }
     }
 
+    private void showSelectedStopCode() {
+        final DefaultMutableTreeNode node = this.getSelectedNode();
+        if (node != null && node.getUserObject() instanceof StopNode) {
+            this.jumpToStop(((StopNode) node.getUserObject()).stop);
+        }
+    }
+
+    /**
+     * Opens the file of the given stop and selects the changed line range, so the corresponding
+     * code location is shown.
+     */
     private void jumpToStop(Stop stop) {
         final File file = stop.getAbsoluteFile();
-        final int line = stop.isDetailedFragmentKnown()
-                ? stop.getMostRecentFragment().getFrom().getLine()
-                : 1;
+        final boolean detailed = stop.isDetailedFragmentKnown();
+        final int fromLine = detailed ? stop.getMostRecentFragment().getFrom().getLine() : 1;
+        final int toLine = detailed ? stop.getMostRecentFragment().getTo().getLine() : fromLine;
         IntellijMarkerFactory.runOnEdt(() -> {
-            final com.intellij.openapi.vfs.VirtualFile vf = IntellijFileResolver.findByAbsoluteFile(file);
+            final VirtualFile vf = IntellijFileResolver.findByAbsoluteFile(file);
             if (vf == null) {
                 return;
             }
-            new com.intellij.openapi.fileEditor.OpenFileDescriptor(
-                    this.project, vf, Math.max(0, line - 1), 0).navigate(true);
+            final OpenFileDescriptor descriptor =
+                    new OpenFileDescriptor(this.project, vf, Math.max(0, fromLine - 1), 0);
+            final Editor editor = FileEditorManager.getInstance(this.project).openTextEditor(descriptor, true);
+            if (editor != null && detailed) {
+                final Document doc = editor.getDocument();
+                final int lastLine = doc.getLineCount() - 1;
+                final int from = Math.max(0, Math.min(fromLine - 1, lastLine));
+                final int to = Math.max(from, Math.min(toLine - 1, lastLine));
+                editor.getSelectionModel().setSelection(doc.getLineStartOffset(from), doc.getLineEndOffset(to));
+            }
         });
     }
 

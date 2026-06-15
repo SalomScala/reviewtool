@@ -64,12 +64,9 @@ public final class IntellijStopMarker implements IStopMarker {
             return;
         }
         final String tooltip = this.active ? this.message : this.message + " (inactive tour)";
-        this.handle = this.factory.showGutterMarker(
-                this.file, this.fromLine, IntellijMarkerFactory.stopIcon(this.active), tooltip);
-    }
-
-    int getToLine() {
-        return this.toLine;
+        this.handle = this.factory.showLineRangeMarker(
+                this.file, this.fromLine, this.toLine, IntellijMarkerFactory.stopIcon(this.active), tooltip,
+                this.active);
     }
 
     void disposeHandle() {
