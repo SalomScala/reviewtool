@@ -15,6 +15,7 @@ public class ReviewToolWindowFactory implements ToolWindowFactory, DumbAware {
     @Override
     public void createToolWindowContent(Project project, ToolWindow toolWindow) {
         final ReviewToolPanel panel = new ReviewToolPanel(project);
+        ReviewToolService.getInstance(project).setReviewPanel(panel);
         final Content content = ContentFactory.getInstance().createContent(panel, "", false);
         toolWindow.getContentManager().addContent(content);
     }
