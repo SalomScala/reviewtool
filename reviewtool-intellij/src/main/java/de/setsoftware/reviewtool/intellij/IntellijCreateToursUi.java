@@ -10,7 +10,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.ui.Messages;
 
 import de.setsoftware.reviewtool.base.Pair;
 import de.setsoftware.reviewtool.base.Multiset;
@@ -45,26 +44,23 @@ public final class IntellijCreateToursUi implements ICreateToursUi {
             return choices.get(0).getSecond();
         }
 
-        final String[] options = new String[choices.size()];
-        for (int i = 0; i < choices.size(); i++) {
-            final Pair<String, List<? extends Tour>> choice = choices.get(i);
+        final List<String> options = new ArrayList<>();
+        for (final Pair<String, List<? extends Tour>> choice : choices) {
             int stops = 0;
             for (final Tour t : choice.getSecond()) {
                 stops += t.getStops().size();
             }
-            options[i] = choice.getFirst()
-                    + " (" + stops + " stops in " + choice.getSecond().size() + " tours)";
+            options.add(choice.getFirst()
+                    + "  (" + stops + " stops in " + choice.getSecond().size() + " tours)");
         }
 
         final AtomicInteger selected = new AtomicInteger(-1);
-        ApplicationManager.getApplication().invokeAndWait(() ->
-                selected.set(Messages.showChooseDialog(
-                        this.project,
-                        "Choose how the changes should be grouped into review tours:",
-                        "Create Review Tours",
-                        null,
-                        options,
-                        options[0])));
+        ApplicationManager.getApplication().invokeAndWait(() -> {
+            final SelectTourStructureDialog dialog = new SelectTourStructureDialog(this.project, options);
+            if (dialog.showAndGet()) {
+                selected.set(dialog.getSelectedIndex());
+            }
+        });
         if (selected.get() < 0) {
             return null;
         }
