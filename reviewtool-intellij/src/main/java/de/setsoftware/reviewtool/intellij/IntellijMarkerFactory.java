@@ -7,6 +7,7 @@ import java.util.List;
 import javax.swing.Icon;
 
 import com.intellij.icons.AllIcons;
+import com.intellij.openapi.actionSystem.ActionGroup;
 import com.intellij.openapi.application.Application;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Document;
@@ -22,23 +23,17 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.JBColor;
 
-import de.setsoftware.reviewtool.model.remarks.IMarkerFactory;
-import de.setsoftware.reviewtool.model.remarks.IReviewMarker;
-import de.setsoftware.reviewtool.model.remarks.Position;
-import de.setsoftware.reviewtool.model.remarks.ReviewRemarkException;
-
 /**
  * Creates and manages the gutter markers that visualize review remarks and review tour stops
- * inside the IntelliJ editors. It implements the platform-independent {@link IMarkerFactory}
- * abstraction (used while parsing the review data) and offers additional helper methods for the
- * tour stop markers.
+ * inside the IntelliJ editors.
  *
  * <p>In contrast to Eclipse, where markers are persisted on the workspace resources, IntelliJ
  * markers are transient {@link RangeHighlighter}s that live in the document markup model. They are
  * therefore re-created from the review data / tours each time and removed via the {@code clear*}
- * methods.
+ * methods. Review remark markers carry a popup menu (the IntelliJ counterpart of the Eclipse
+ * marker quick-fixes) with the resolution actions.
  */
-public final class IntellijMarkerFactory implements IMarkerFactory {
+public final class IntellijMarkerFactory {
 
     private static final JBColor ACTIVE_BACKGROUND = new JBColor(new Color(0xD8E8FF), new Color(0x2E436E));
     private static final JBColor INACTIVE_BACKGROUND = new JBColor(new Color(0xEDEDED), new Color(0x3A3C3F));
@@ -46,7 +41,7 @@ public final class IntellijMarkerFactory implements IMarkerFactory {
     private static final JBColor INACTIVE_STRIPE = new JBColor(new Color(0xB0B0B0), new Color(0x707070));
 
     private final Project project;
-    private final List<IntellijReviewMarker> reviewMarkers = new ArrayList<>();
+    private final List<MarkerHandle> remarkHandles = new ArrayList<>();
     private final List<IntellijStopMarker> stopMarkers = new ArrayList<>();
 
     public IntellijMarkerFactory(Project project) {
@@ -57,26 +52,17 @@ public final class IntellijMarkerFactory implements IMarkerFactory {
         return this.project;
     }
 
-    @Override
-    public IReviewMarker createMarker(Position pos) throws ReviewRemarkException {
-        final VirtualFile file = pos.getShortFileName() == null
-                ? null
-                : IntellijFileResolver.findByShortName(this.project, pos.getShortFileName());
-        final IntellijReviewMarker marker = new IntellijReviewMarker(this, pos, file);
-        this.reviewMarkers.add(marker);
-        return marker;
-    }
-
     /**
-     * Renders all currently known review markers in the editor gutters.
-     * Must be called after the review data has been parsed (so all attributes are set).
+     * Adds a gutter marker for a review remark at the given line, with a popup menu containing the
+     * resolution actions. Must be called on the EDT.
      */
-    public void renderReviewMarkers() {
-        runOnEdt(() -> {
-            for (final IntellijReviewMarker marker : new ArrayList<>(this.reviewMarkers)) {
-                marker.render();
-            }
-        });
+    public void addRemarkMarker(
+            VirtualFile file, int line, boolean warning, String tooltip, ActionGroup popupActions) {
+        final MarkerHandle handle = this.showGutterMarker(
+                file, line, reviewIcon(warning), tooltip, popupActions);
+        if (handle != null) {
+            this.remarkHandles.add(handle);
+        }
     }
 
     /**
@@ -84,10 +70,10 @@ public final class IntellijMarkerFactory implements IMarkerFactory {
      */
     public void clearReviewMarkers() {
         runOnEdtAndWait(() -> {
-            for (final IntellijReviewMarker marker : new ArrayList<>(this.reviewMarkers)) {
-                marker.disposeHandle();
+            for (final MarkerHandle handle : new ArrayList<>(this.remarkHandles)) {
+                handle.dispose();
             }
-            this.reviewMarkers.clear();
+            this.remarkHandles.clear();
         });
     }
 
@@ -115,10 +101,6 @@ public final class IntellijMarkerFactory implements IMarkerFactory {
         });
     }
 
-    void forget(IntellijReviewMarker marker) {
-        this.reviewMarkers.remove(marker);
-    }
-
     void forget(IntellijStopMarker marker) {
         this.stopMarkers.remove(marker);
     }
@@ -128,7 +110,7 @@ public final class IntellijMarkerFactory implements IMarkerFactory {
      * Returns a handle that allows to remove it again, or null if the file has no document.
      * Must be called on the EDT.
      */
-    MarkerHandle showGutterMarker(VirtualFile file, int line, Icon icon, String tooltip) {
+    MarkerHandle showGutterMarker(VirtualFile file, int line, Icon icon, String tooltip, ActionGroup popupActions) {
         if (file == null) {
             return null;
         }
@@ -140,7 +122,7 @@ public final class IntellijMarkerFactory implements IMarkerFactory {
         final MarkupModel markup = DocumentMarkupModel.forDocument(doc, this.project, true);
         final RangeHighlighter highlighter =
                 markup.addLineHighlighter(lineIndex, HighlighterLayer.WARNING, null);
-        highlighter.setGutterIconRenderer(new CortGutterIconRenderer(icon, tooltip));
+        highlighter.setGutterIconRenderer(new CortGutterIconRenderer(icon, tooltip, popupActions));
         return new MarkerHandle(markup, highlighter);
     }
 
@@ -173,7 +155,7 @@ public final class IntellijMarkerFactory implements IMarkerFactory {
                 HighlighterTargetArea.LINES_IN_RANGE);
         highlighter.setErrorStripeMarkColor(active ? ACTIVE_STRIPE : INACTIVE_STRIPE);
         highlighter.setErrorStripeTooltip(tooltip);
-        highlighter.setGutterIconRenderer(new CortGutterIconRenderer(icon, tooltip));
+        highlighter.setGutterIconRenderer(new CortGutterIconRenderer(icon, tooltip, null));
         return new MarkerHandle(markup, highlighter);
     }
 
@@ -225,15 +207,18 @@ public final class IntellijMarkerFactory implements IMarkerFactory {
     }
 
     /**
-     * Gutter icon renderer that shows the remark/stop message as tooltip.
+     * Gutter icon renderer that shows the remark/stop message as tooltip and optionally offers a
+     * popup menu with actions (used for the review remark quick-fixes).
      */
     private static final class CortGutterIconRenderer extends GutterIconRenderer {
         private final Icon icon;
         private final String tooltip;
+        private final ActionGroup popupActions;
 
-        CortGutterIconRenderer(Icon icon, String tooltip) {
+        CortGutterIconRenderer(Icon icon, String tooltip, ActionGroup popupActions) {
             this.icon = icon;
             this.tooltip = tooltip;
+            this.popupActions = popupActions;
         }
 
         @Override
@@ -249,6 +234,11 @@ public final class IntellijMarkerFactory implements IMarkerFactory {
         @Override
         public Alignment getAlignment() {
             return Alignment.LEFT;
+        }
+
+        @Override
+        public ActionGroup getPopupMenuActions() {
+            return this.popupActions;
         }
 
         @Override

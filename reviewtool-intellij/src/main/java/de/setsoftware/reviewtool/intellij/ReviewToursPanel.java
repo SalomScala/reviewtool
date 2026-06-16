@@ -7,9 +7,7 @@ import java.awt.event.MouseEvent;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
@@ -40,6 +38,9 @@ import de.setsoftware.reviewtool.model.changestructure.Stop;
 import de.setsoftware.reviewtool.model.changestructure.Tour;
 import de.setsoftware.reviewtool.model.changestructure.TourElement;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
+import de.setsoftware.reviewtool.model.viewtracking.IViewStatisticsListener;
+import de.setsoftware.reviewtool.model.viewtracking.ViewStatDataForStop;
+import de.setsoftware.reviewtool.model.viewtracking.ViewStatistics;
 
 /**
  * Shows the review tours of the currently reviewed ticket as a tree of tours and their stops.
@@ -80,18 +81,28 @@ public final class ReviewToursPanel extends JPanel {
     private final JTree tree = new JTree(this.treeModel);
     private final JLabel statusLabel = new JLabel("No tours created yet.");
 
-    private final Set<Stop> checkedStops = new HashSet<>();
+    private static final int LONG_ENOUGH_VIEW_COUNT = 2;
+
+    private final ViewStatistics statistics = new ViewStatistics();
+    private final EditorViewTracker viewTracker;
+    // kept in a field because ViewStatistics holds its listeners only weakly
+    private final IViewStatisticsListener statisticsListener =
+            (file) -> IntellijMarkerFactory.runOnEdt(this.tree::repaint);
 
     private ToursInReview tours;
     private boolean hideIrrelevant;
     private boolean hideChecked;
+    private boolean hideVisited;
     private Stop currentStop;
 
     public ReviewToursPanel(Project project, IntellijMarkerFactory markerFactory) {
         super(new BorderLayout());
         this.project = project;
         this.markerFactory = markerFactory;
+        this.viewTracker = new EditorViewTracker(project, this.statistics);
         this.buildUi();
+        this.statistics.addListener(this.statisticsListener);
+        this.viewTracker.start();
     }
 
     private void buildUi() {
@@ -117,9 +128,9 @@ public final class ReviewToursPanel extends JPanel {
         final JButton nextButton = new JButton("Next Stop");
         nextButton.addActionListener((e) -> this.navigate(1));
         toolbar.add(nextButton);
-        final JButton nextUncheckedButton = new JButton("Next Unchecked");
-        nextUncheckedButton.addActionListener((e) -> this.jumpToNextUnchecked());
-        toolbar.add(nextUncheckedButton);
+        final JButton nextUnvisitedButton = new JButton("Next Unvisited");
+        nextUnvisitedButton.addActionListener((e) -> this.jumpToNextUnvisited());
+        toolbar.add(nextUnvisitedButton);
         final JButton refreshMarkersButton = new JButton("Refresh Stop Markers");
         refreshMarkersButton.addActionListener((e) -> this.renderStopMarkers());
         toolbar.add(refreshMarkersButton);
@@ -135,6 +146,12 @@ public final class ReviewToursPanel extends JPanel {
             this.rebuildTree();
         });
         toolbar.add(hideCheckedBox);
+        final JCheckBox hideVisitedBox = new JCheckBox("Hide visited");
+        hideVisitedBox.addActionListener((e) -> {
+            this.hideVisited = hideVisitedBox.isSelected();
+            this.rebuildTree();
+        });
+        toolbar.add(hideVisitedBox);
         this.add(toolbar, BorderLayout.NORTH);
 
         this.tree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
@@ -218,7 +235,10 @@ public final class ReviewToursPanel extends JPanel {
                 if (this.hideIrrelevant && this.isIrrelevant(stop)) {
                     continue;
                 }
-                if (this.hideChecked && this.checkedStops.contains(stop)) {
+                if (this.hideChecked && this.isChecked(stop)) {
+                    continue;
+                }
+                if (this.hideVisited && this.isFullyVisited(stop)) {
                     continue;
                 }
                 parentNode.add(new DefaultMutableTreeNode(new StopNode(stop)));
@@ -228,6 +248,26 @@ public final class ReviewToursPanel extends JPanel {
 
     private boolean isIrrelevant(Stop stop) {
         return this.tours != null && stop.isIrrelevantForReview(this.tours.getIrrelevantCategories());
+    }
+
+    private boolean isChecked(Stop stop) {
+        return this.statistics.isMarkedAsChecked(stop);
+    }
+
+    private boolean isFullyVisited(Stop stop) {
+        final ViewStatDataForStop ratio = this.statistics.determineViewRatio(stop, LONG_ENOUGH_VIEW_COUNT);
+        return !ratio.isNotViewedAtAll() && !ratio.isPartlyUnvisited();
+    }
+
+    private String visitedLabel(Stop stop) {
+        final ViewStatDataForStop ratio = this.statistics.determineViewRatio(stop, LONG_ENOUGH_VIEW_COUNT);
+        if (ratio.isNotViewedAtAll()) {
+            return "unvisited";
+        } else if (ratio.isPartlyUnvisited()) {
+            return "partly visited";
+        } else {
+            return "visited";
+        }
     }
 
     private DefaultMutableTreeNode getSelectedNode() {
@@ -324,7 +364,7 @@ public final class ReviewToursPanel extends JPanel {
             menu.add(menuItem("Show code", () -> this.jumpToStop(stop)));
             menu.add(menuItem("Show diff", () -> StopDiffViewer.show(this.project, stop)));
             menu.add(menuItem("Open containing folder", () -> this.openContainingFolder(stop)));
-            final boolean checked = this.checkedStops.contains(stop);
+            final boolean checked = this.isChecked(stop);
             menu.add(menuItem(checked ? "Unmark as checked" : "Mark as checked",
                     () -> this.toggleChecked(stop)));
         } else if (userObject instanceof TourNode) {
@@ -347,9 +387,7 @@ public final class ReviewToursPanel extends JPanel {
     }
 
     private void toggleChecked(Stop stop) {
-        if (!this.checkedStops.remove(stop)) {
-            this.checkedStops.add(stop);
-        }
+        this.statistics.toggleExplicitlyCheckedMark(Collections.singletonList(stop));
         this.rebuildTree();
     }
 
@@ -388,7 +426,7 @@ public final class ReviewToursPanel extends JPanel {
         this.jumpToStop(stops.get(target));
     }
 
-    private void jumpToNextUnchecked() {
+    private void jumpToNextUnvisited() {
         final List<Stop> stops = this.flattenRelevantStops();
         if (stops.isEmpty()) {
             return;
@@ -396,7 +434,7 @@ public final class ReviewToursPanel extends JPanel {
         final int start = this.currentStop == null ? 0 : stops.indexOf(this.currentStop) + 1;
         for (int i = 0; i < stops.size(); i++) {
             final Stop candidate = stops.get((start + i) % stops.size());
-            if (!this.checkedStops.contains(candidate)) {
+            if (!this.isFullyVisited(candidate)) {
                 this.jumpToStop(candidate);
                 return;
             }
@@ -502,13 +540,14 @@ public final class ReviewToursPanel extends JPanel {
                             + "  (" + tour.getStops().size() + " stops)");
                 } else if (userObject instanceof StopNode) {
                     final Stop stop = ((StopNode) userObject).stop;
-                    final boolean checked = ReviewToursPanel.this.checkedStops.contains(stop);
+                    final boolean checked = ReviewToursPanel.this.isChecked(stop);
                     final StringBuilder text = new StringBuilder(checked ? "✓ " : "");
                     text.append(stopLabel(stop));
                     final String classification = stop.getClassificationFormatted().trim();
                     if (!classification.isEmpty()) {
                         text.append("  [").append(classification).append(']');
                     }
+                    text.append("  (").append(ReviewToursPanel.this.visitedLabel(stop)).append(')');
                     if (ReviewToursPanel.this.isIrrelevant(stop)) {
                         text.append("  (irrelevant)");
                     }

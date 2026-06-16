@@ -4,6 +4,7 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.TreeMap;
 
 import com.github.javaparser.JavaParser;
@@ -18,19 +19,111 @@ import de.setsoftware.reviewtool.model.changestructure.Tour;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
 
 /**
- * Generates a human readable summary of the changes under review. This is a lightweight,
+ * Builds a structured summary of the changes under review. This is a lightweight,
  * platform-independent counterpart of the Eclipse review content summary view: it groups the
- * changes by file, shows the added/removed line counts and (for Java files) lists the changed
- * types and methods, determined by mapping the changed line ranges onto the declarations found by
+ * changes by file, computes the added/removed line counts and (for Java files) determines the
+ * changed types and methods by mapping the changed line ranges onto the declarations found by
  * {@link JavaParser}. The heavier refactoring-detection and delta-doc techniques of the Eclipse
  * summary (which rely on Eclipse JDT and external libraries) are not reproduced here.
  */
 public final class ChangeSummaryGenerator {
 
     /**
-     * Per-file accumulator.
+     * Summary for a single file.
      */
-    private static final class FileSummary {
+    public static final class FileItem {
+        private final String path;
+        private final int added;
+        private final int removed;
+        private final boolean binary;
+        private final List<String> parts;
+
+        FileItem(String path, int added, int removed, boolean binary, List<String> parts) {
+            this.path = path;
+            this.added = added;
+            this.removed = removed;
+            this.binary = binary;
+            this.parts = parts;
+        }
+
+        public String getPath() {
+            return this.path;
+        }
+
+        public int getAdded() {
+            return this.added;
+        }
+
+        public int getRemoved() {
+            return this.removed;
+        }
+
+        public boolean isBinary() {
+            return this.binary;
+        }
+
+        /**
+         * The changed types/methods of the file (only for Java files), as readable strings.
+         */
+        public List<String> getParts() {
+            return this.parts;
+        }
+    }
+
+    /**
+     * The whole summary.
+     */
+    public static final class SummaryResult {
+        private final int tourCount;
+        private final int stopCount;
+        private final int irrelevantCount;
+        private final int totalAdded;
+        private final int totalRemoved;
+        private final List<FileItem> files;
+
+        SummaryResult(int tourCount, int stopCount, int irrelevantCount,
+                int totalAdded, int totalRemoved, List<FileItem> files) {
+            this.tourCount = tourCount;
+            this.stopCount = stopCount;
+            this.irrelevantCount = irrelevantCount;
+            this.totalAdded = totalAdded;
+            this.totalRemoved = totalRemoved;
+            this.files = files;
+        }
+
+        public int getTourCount() {
+            return this.tourCount;
+        }
+
+        public int getStopCount() {
+            return this.stopCount;
+        }
+
+        public int getRelevantCount() {
+            return this.stopCount - this.irrelevantCount;
+        }
+
+        public int getIrrelevantCount() {
+            return this.irrelevantCount;
+        }
+
+        public int getTotalAdded() {
+            return this.totalAdded;
+        }
+
+        public int getTotalRemoved() {
+            return this.totalRemoved;
+        }
+
+        public List<FileItem> getFiles() {
+            return this.files;
+        }
+    }
+
+    /**
+     * Per-file accumulator used while building the result.
+     */
+    private static final class FileAccumulator {
         private int added;
         private int removed;
         private boolean binary;
@@ -43,14 +136,14 @@ public final class ChangeSummaryGenerator {
     }
 
     /**
-     * Builds the summary text for the given tours.
+     * Analyzes the given tours and returns the structured summary, or null if there are no tours.
      */
-    public static String generate(ToursInReview tours) {
+    public static SummaryResult analyze(ToursInReview tours) {
         if (tours == null) {
-            return "No tours created yet. Use \"Create Tours\" to build the review tours first.";
+            return null;
         }
 
-        final TreeMap<File, FileSummary> byFile = new TreeMap<>();
+        final TreeMap<File, FileAccumulator> byFile = new TreeMap<>();
         int stopCount = 0;
         int irrelevantCount = 0;
         for (final Tour tour : tours.getTopmostTours()) {
@@ -64,45 +157,30 @@ public final class ChangeSummaryGenerator {
             }
         }
 
-        final StringBuilder ret = new StringBuilder();
-        ret.append("=== Review Summary ===\n\n");
-        ret.append("Tours: ").append(tours.getTopmostTours().size()).append('\n');
-        ret.append("Stops: ").append(stopCount)
-                .append(" (relevant ").append(stopCount - irrelevantCount)
-                .append(", irrelevant ").append(irrelevantCount).append(")\n");
-        ret.append("Files changed: ").append(byFile.size());
         int totalAdded = 0;
         int totalRemoved = 0;
-        for (final FileSummary fs : byFile.values()) {
+        final List<FileItem> files = new ArrayList<>();
+        for (final Map.Entry<File, FileAccumulator> e : byFile.entrySet()) {
+            final FileAccumulator fs = e.getValue();
             totalAdded += fs.added;
             totalRemoved += fs.removed;
+            final List<String> parts = fs.java && fs.contents != null
+                    ? determineJavaParts(fs)
+                    : new ArrayList<>();
+            files.add(new FileItem(e.getKey().getPath(), fs.added, fs.removed, fs.binary, parts));
         }
-        ret.append("  (+").append(totalAdded).append(" / -").append(totalRemoved).append(" lines)\n\n");
-
-        ret.append("Changed files:\n");
-        for (final java.util.Map.Entry<File, FileSummary> e : byFile.entrySet()) {
-            final FileSummary fs = e.getValue();
-            ret.append("  ").append(e.getKey().getPath());
-            if (fs.binary) {
-                ret.append("  (binary)\n");
-                continue;
-            }
-            ret.append("  (+").append(fs.added).append(" / -").append(fs.removed).append(")\n");
-            if (fs.java && fs.contents != null) {
-                appendJavaParts(ret, fs);
-            }
-        }
-        return ret.toString();
+        return new SummaryResult(
+                tours.getTopmostTours().size(), stopCount, irrelevantCount, totalAdded, totalRemoved, files);
     }
 
-    private static void collectStop(TreeMap<File, FileSummary> byFile, Stop stop) {
+    private static void collectStop(TreeMap<File, FileAccumulator> byFile, Stop stop) {
         final File file = stop.getAbsoluteFile();
-        FileSummary fs = byFile.get(file);
+        FileAccumulator fs = byFile.get(file);
         if (fs == null) {
-            fs = new FileSummary();
+            fs = new FileAccumulator();
             fs.binary = stop.isBinaryChange();
             fs.java = file.getName().endsWith(".java");
-            if (fs.java && fs.contents == null) {
+            if (fs.java) {
                 try {
                     fs.contents = stop.getMostRecentFile().getContents();
                 } catch (final Exception e) {
@@ -121,9 +199,10 @@ public final class ChangeSummaryGenerator {
         }
     }
 
-    private static void appendJavaParts(StringBuilder ret, FileSummary fs) {
+    private static List<String> determineJavaParts(FileAccumulator fs) {
+        final List<String> parts = new ArrayList<>();
         if (fs.changedRanges.isEmpty()) {
-            return;
+            return parts;
         }
         try {
             final CompilationUnit cu = JavaParser.parse(new ByteArrayInputStream(fs.contents));
@@ -135,17 +214,16 @@ public final class ChangeSummaryGenerator {
                     }
                 }
                 if (!changedMethods.isEmpty()) {
-                    ret.append("     ").append(type.getNameAsString()).append(": ")
-                            .append(String.join(", ", changedMethods)).append('\n');
+                    parts.add(type.getNameAsString() + ": " + String.join(", ", changedMethods));
                 } else if (overlaps(beginLine(type), endLine(type), fs.changedRanges)) {
-                    ret.append("     ").append(type.getNameAsString())
-                            .append(" (declaration / non-method change)\n");
+                    parts.add(type.getNameAsString() + " (declaration / non-method change)");
                 }
             }
         } catch (final Exception e) {
             //a parse problem should not break the whole summary
             Logger.info("could not parse Java file for summary: " + e);
         }
+        return parts;
     }
 
     private static int beginLine(com.github.javaparser.ast.Node node) {

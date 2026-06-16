@@ -8,7 +8,6 @@ import java.awt.event.MouseEvent;
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -28,6 +27,10 @@ import javax.swing.tree.DefaultTreeModel;
 
 import com.intellij.ide.BrowserUtil;
 import com.intellij.notification.NotificationGroupManager;
+import com.intellij.openapi.actionSystem.ActionGroup;
+import com.intellij.openapi.actionSystem.AnAction;
+import com.intellij.openapi.actionSystem.AnActionEvent;
+import com.intellij.openapi.actionSystem.DefaultActionGroup;
 import com.intellij.notification.NotificationType;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Editor;
@@ -54,10 +57,9 @@ import de.setsoftware.reviewtool.model.api.ICommit;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
 import de.setsoftware.reviewtool.model.remarks.DummyMarker;
 import de.setsoftware.reviewtool.model.remarks.FileLinePosition;
-import de.setsoftware.reviewtool.model.remarks.IReviewMarker;
 import de.setsoftware.reviewtool.model.remarks.Position;
 import de.setsoftware.reviewtool.model.remarks.RemarkType;
-import de.setsoftware.reviewtool.model.remarks.ReviewData;
+import de.setsoftware.reviewtool.model.remarks.ResolutionType;
 import de.setsoftware.reviewtool.model.remarks.ReviewRemark;
 import de.setsoftware.reviewtool.ticketconnectors.youtrack.YouTrackConnector;
 
@@ -151,10 +153,12 @@ public class ReviewToolPanel extends JPanel {
     private final IntellijMarkerFactory markerFactory;
     private final ReviewToursPanel toursPanel;
     private final ReviewSummaryPanel summaryPanel;
+    private final ReviewRemarksModel remarksModel;
     private final ReviewRemarksPanel remarksPanel;
 
     private volatile IChangeData lastLoadedChanges;
     private volatile String lastLoadedKey;
+    private boolean remarkMarkersShown;
 
     public ReviewToolPanel(Project project) {
         super(new BorderLayout());
@@ -162,10 +166,15 @@ public class ReviewToolPanel extends JPanel {
         this.markerFactory = new IntellijMarkerFactory(project);
         this.toursPanel = new ReviewToursPanel(project, this.markerFactory);
         this.summaryPanel = new ReviewSummaryPanel(project);
-        this.remarksPanel = new ReviewRemarksPanel(
-                project,
+        this.remarksModel = new ReviewRemarksModel(
                 () -> this.remarksArea.getText(),
                 (text) -> this.remarksArea.setText(text));
+        this.remarksPanel = new ReviewRemarksPanel(project, this.remarksModel);
+        this.remarksModel.addListener(() -> {
+            if (this.remarkMarkersShown) {
+                this.renderRemarkMarkers();
+            }
+        });
         this.buildUi();
     }
 
@@ -310,7 +319,7 @@ public class ReviewToolPanel extends JPanel {
             final String remarks = ticket == null ? "" : ticket.getReviewData();
             ApplicationManager.getApplication().invokeLater(() -> {
                 this.remarksArea.setText(remarks);
-                this.remarksPanel.reload();
+                this.remarksModel.reload();
             });
         } catch (final RuntimeException e) {
             this.showError("Could not load review remarks for " + key, e);
@@ -573,36 +582,85 @@ public class ReviewToolPanel extends JPanel {
     }
 
     /**
-     * Parses the review remarks currently shown in the editor and renders them as markers in the
-     * editor gutters.
+     * Shows the current review remarks as markers (with quick-fix popups) in the editor gutters.
      */
     private void showRemarkMarkers() {
-        final String remarks = this.remarksArea.getText();
-        new Task.Backgroundable(this.project, "Loading review remark markers", false) {
-            @Override
-            public void run(ProgressIndicator indicator) {
-                try {
-                    ReviewToolPanel.this.markerFactory.clearReviewMarkers();
-                    ReviewData.parse(
-                            Collections.<Integer, String>emptyMap(),
-                            ReviewToolPanel.this.markerFactory,
-                            remarks);
-                    ReviewToolPanel.this.markerFactory.renderReviewMarkers();
-                } catch (final RuntimeException e) {
-                    ReviewToolPanel.this.showError("Could not parse review remarks", e);
-                }
+        this.remarkMarkersShown = true;
+        // reload() notifies the model listener, which renders the markers because they are now shown
+        this.remarksModel.reload();
+    }
+
+    /**
+     * Renders a gutter marker (with a resolution popup) for every remark that has a file/line
+     * position. Must be triggered on the EDT (it is, from the model listener and the buttons).
+     */
+    private void renderRemarkMarkers() {
+        this.markerFactory.clearReviewMarkers();
+        for (final ReviewRemark remark : this.remarksModel.getAllRemarks()) {
+            final Position pos = Position.parse(remark.getPositionString());
+            if (pos.getShortFileName() == null || pos.getLine() <= 0) {
+                continue;
             }
-        }.queue();
+            final VirtualFile file = IntellijFileResolver.findByShortName(this.project, pos.getShortFileName());
+            if (file == null) {
+                continue;
+            }
+            final boolean warning = remark.needsFixing();
+            final String tooltip = "[" + remark.getRemarkType() + " / " + remark.getResolution() + "] "
+                    + remark.getText();
+            this.markerFactory.addRemarkMarker(file, pos.getLine(), warning, tooltip, this.buildRemarkPopup(remark));
+        }
+    }
+
+    private ActionGroup buildRemarkPopup(ReviewRemark remark) {
+        final DefaultActionGroup group = new DefaultActionGroup();
+        group.add(remarkAction("Mark as fixed", () -> this.remarksModel.resolve(remark, ResolutionType.FIXED, null)));
+        group.add(remarkAction("Mark as fixed (with comment)...",
+                () -> this.resolveWithComment(remark, ResolutionType.FIXED)));
+        group.add(remarkAction("Mark as won't fix...",
+                () -> this.resolveWithComment(remark, ResolutionType.WONT_FIX)));
+        group.add(remarkAction("Mark as unclear...",
+                () -> this.resolveWithComment(remark, ResolutionType.QUESTION)));
+        group.add(remarkAction("Reopen", () -> this.remarksModel.resolve(remark, ResolutionType.OPEN, null)));
+        group.add(remarkAction("Add comment...", () -> this.addCommentToRemark(remark)));
+        group.add(remarkAction("Delete remark", () -> this.remarksModel.delete(remark)));
+        return group;
+    }
+
+    private static AnAction remarkAction(String text, Runnable action) {
+        return new AnAction(text) {
+            @Override
+            public void actionPerformed(AnActionEvent e) {
+                action.run();
+            }
+        };
+    }
+
+    private void resolveWithComment(ReviewRemark remark, ResolutionType resolution) {
+        final String comment = Messages.showInputDialog(this.project,
+                "Comment (optional):", "Resolve Review Remark", null);
+        if (comment == null) {
+            return;
+        }
+        this.remarksModel.resolve(remark, resolution, comment);
+    }
+
+    private void addCommentToRemark(ReviewRemark remark) {
+        final String comment = Messages.showInputDialog(this.project, "Comment:", "Add Comment", null);
+        if (comment != null && !comment.trim().isEmpty()) {
+            this.remarksModel.addComment(remark, comment);
+        }
     }
 
     private void clearAllMarkers() {
+        this.remarkMarkersShown = false;
         this.markerFactory.clearReviewMarkers();
         this.markerFactory.clearStopMarkers();
     }
 
     /**
      * Adds a new review remark at the caret position of the currently active editor and merges it
-     * into the review remarks text.
+     * into the review remarks via the shared model.
      */
     private void addRemarkAtCursor() {
         final Editor editor = FileEditorManager.getInstance(this.project).getSelectedTextEditor();
@@ -636,18 +694,9 @@ public class ReviewToolPanel extends JPanel {
 
         try {
             final Position pos = new FileLinePosition(file.getName(), line);
-            final IReviewMarker marker = this.markerFactory.createMarker(pos);
             final ReviewRemark remark = ReviewRemark.create(
-                    marker, System.getProperty("user.name", "reviewer"), pos, text.trim(), types[typeChoice]);
-
-            final ReviewData reviewData = ReviewData.parse(
-                    Collections.<Integer, String>emptyMap(),
-                    DummyMarker.FACTORY,
-                    this.remarksArea.getText());
-            reviewData.merge(remark, 1);
-            this.remarksArea.setText(reviewData.serialize());
-            this.remarksPanel.reload();
-            this.markerFactory.renderReviewMarkers();
+                    new DummyMarker(), ReviewRemarksModel.currentUser(), pos, text.trim(), types[typeChoice]);
+            this.remarksModel.mergeNewRemark(remark);
         } catch (final RuntimeException e) {
             this.showError("Could not add review remark", e);
         }
