@@ -58,11 +58,13 @@ public final class IntellijMarkerFactory {
      */
     public void addRemarkMarker(
             VirtualFile file, int line, boolean warning, String tooltip, ActionGroup popupActions) {
-        final MarkerHandle handle = this.showGutterMarker(
-                file, line, reviewIcon(warning), tooltip, popupActions);
-        if (handle != null) {
-            this.remarkHandles.add(handle);
-        }
+        runOnEdt(() -> ApplicationManager.getApplication().runReadAction(() -> {
+            final MarkerHandle handle = this.showGutterMarker(
+                    file, line, reviewIcon(warning), tooltip, popupActions);
+            if (handle != null) {
+                this.remarkHandles.add(handle);
+            }
+        }));
     }
 
     /**
@@ -85,7 +87,7 @@ public final class IntellijMarkerFactory {
         final IntellijStopMarker marker =
                 new IntellijStopMarker(this, file, fromLine, toLine, tourActive, message);
         this.stopMarkers.add(marker);
-        runOnEdt(marker::render);
+        runOnEdt(() -> ApplicationManager.getApplication().runReadAction(marker::render));
         return marker;
     }
 

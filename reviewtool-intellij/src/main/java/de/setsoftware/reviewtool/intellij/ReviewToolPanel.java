@@ -596,20 +596,22 @@ public class ReviewToolPanel extends JPanel {
      */
     private void renderRemarkMarkers() {
         this.markerFactory.clearReviewMarkers();
-        for (final ReviewRemark remark : this.remarksModel.getAllRemarks()) {
-            final Position pos = Position.parse(remark.getPositionString());
-            if (pos.getShortFileName() == null || pos.getLine() <= 0) {
-                continue;
+        IntellijMarkerFactory.runOnEdt(() -> ApplicationManager.getApplication().runReadAction(() -> {
+            for (final ReviewRemark remark : this.remarksModel.getAllRemarks()) {
+                final Position pos = Position.parse(remark.getPositionString());
+                if (pos.getShortFileName() == null || pos.getLine() <= 0) {
+                    continue;
+                }
+                final VirtualFile file = IntellijFileResolver.findByShortName(this.project, pos.getShortFileName());
+                if (file == null) {
+                    continue;
+                }
+                final boolean warning = remark.needsFixing();
+                final String tooltip = "[" + remark.getRemarkType() + " / " + remark.getResolution() + "] "
+                        + remark.getText();
+                this.markerFactory.addRemarkMarker(file, pos.getLine(), warning, tooltip, this.buildRemarkPopup(remark));
             }
-            final VirtualFile file = IntellijFileResolver.findByShortName(this.project, pos.getShortFileName());
-            if (file == null) {
-                continue;
-            }
-            final boolean warning = remark.needsFixing();
-            final String tooltip = "[" + remark.getRemarkType() + " / " + remark.getResolution() + "] "
-                    + remark.getText();
-            this.markerFactory.addRemarkMarker(file, pos.getLine(), warning, tooltip, this.buildRemarkPopup(remark));
-        }
+        }));
     }
 
     private ActionGroup buildRemarkPopup(ReviewRemark remark) {

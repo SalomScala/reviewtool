@@ -22,6 +22,7 @@ import javax.swing.tree.TreePath;
 import javax.swing.tree.TreeSelectionModel;
 
 import com.intellij.ide.actions.RevealFileAction;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileEditor.FileEditorManager;
@@ -477,7 +478,7 @@ public final class ReviewToursPanel extends JPanel {
         if (this.tours == null) {
             return;
         }
-        IntellijMarkerFactory.runOnEdt(this::doRenderStopMarkers);
+        IntellijMarkerFactory.runOnEdt(() -> ApplicationManager.getApplication().runReadAction(this::doRenderStopMarkers));
     }
 
     private void doRenderStopMarkers() {
