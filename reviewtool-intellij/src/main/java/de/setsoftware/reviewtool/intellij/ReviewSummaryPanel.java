@@ -5,7 +5,9 @@ import java.awt.FlowLayout;
 
 import javax.swing.JButton;
 import javax.swing.JPanel;
-import javax.swing.JTextArea;
+import javax.swing.JTree;
+import javax.swing.tree.DefaultMutableTreeNode;
+import javax.swing.tree.DefaultTreeModel;
 
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.progress.ProgressIndicator;
@@ -13,17 +15,24 @@ import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
 import com.intellij.ui.components.JBScrollPane;
 
+import de.setsoftware.reviewtool.intellij.ChangeSummaryGenerator.FileItem;
+import de.setsoftware.reviewtool.intellij.ChangeSummaryGenerator.SummaryResult;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
 
 /**
- * Shows a human readable summary of the changes under review (see {@link ChangeSummaryGenerator}).
+ * Shows a structured summary of the changes under review (see {@link ChangeSummaryGenerator}) as a
+ * collapsible tree: an overview node, then one node per changed file (with line counts), and below
+ * each file the changed types/methods. The tree's expand/collapse provides the folding that the
+ * Eclipse summary view offers via hyperlinks.
  */
 public final class ReviewSummaryPanel extends JPanel {
 
     private static final long serialVersionUID = 1L;
 
     private final Project project;
-    private final JTextArea summaryArea = new JTextArea();
+    private final DefaultMutableTreeNode treeRoot = new DefaultMutableTreeNode("No summary");
+    private final DefaultTreeModel treeModel = new DefaultTreeModel(this.treeRoot);
+    private final JTree tree = new JTree(this.treeModel);
 
     private ToursInReview tours;
 
@@ -40,10 +49,8 @@ public final class ReviewSummaryPanel extends JPanel {
         toolbar.add(refreshButton);
         this.add(toolbar, BorderLayout.NORTH);
 
-        this.summaryArea.setEditable(false);
-        this.summaryArea.setLineWrap(false);
-        this.summaryArea.setText("No tours created yet. Use \"Create Tours\" to build the review tours first.");
-        this.add(new JBScrollPane(this.summaryArea), BorderLayout.CENTER);
+        this.tree.setRootVisible(true);
+        this.add(new JBScrollPane(this.tree), BorderLayout.CENTER);
     }
 
     /**
@@ -59,13 +66,37 @@ public final class ReviewSummaryPanel extends JPanel {
         new Task.Backgroundable(this.project, "Generating review summary", false) {
             @Override
             public void run(ProgressIndicator indicator) {
-                final String summary = ChangeSummaryGenerator.generate(current);
-                ApplicationManager.getApplication().invokeLater(() -> {
-                    ReviewSummaryPanel.this.summaryArea.setText(summary);
-                    ReviewSummaryPanel.this.summaryArea.setCaretPosition(0);
-                });
+                final SummaryResult result = ChangeSummaryGenerator.analyze(current);
+                ApplicationManager.getApplication().invokeLater(() -> ReviewSummaryPanel.this.showResult(result));
             }
         }.queue();
+    }
+
+    private void showResult(SummaryResult result) {
+        this.treeRoot.removeAllChildren();
+        if (result == null) {
+            this.treeRoot.setUserObject("No tours created yet - use \"Create Tours\" first.");
+        } else {
+            this.treeRoot.setUserObject(String.format(
+                    "Review summary: %d tours, %d stops (relevant %d, irrelevant %d), %d files (+%d / -%d)",
+                    result.getTourCount(), result.getStopCount(), result.getRelevantCount(),
+                    result.getIrrelevantCount(), result.getFiles().size(),
+                    result.getTotalAdded(), result.getTotalRemoved()));
+            for (final FileItem file : result.getFiles()) {
+                final String header = file.isBinary()
+                        ? file.getPath() + "  (binary)"
+                        : file.getPath() + "  (+" + file.getAdded() + " / -" + file.getRemoved() + ")";
+                final DefaultMutableTreeNode fileNode = new DefaultMutableTreeNode(header);
+                for (final String part : file.getParts()) {
+                    fileNode.add(new DefaultMutableTreeNode(part));
+                }
+                this.treeRoot.add(fileNode);
+            }
+        }
+        this.treeModel.reload();
+        for (int i = 0; i < this.tree.getRowCount(); i++) {
+            this.tree.expandRow(i);
+        }
     }
 
 }
