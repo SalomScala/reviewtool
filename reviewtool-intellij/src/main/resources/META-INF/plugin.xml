@@ -29,4 +29,13 @@
                 instance="de.setsoftware.reviewtool.intellij.ReviewToolConfigurable"/>
         <notificationGroup id="CoRT" displayType="BALLOON"/>
     </extensions>
+
+    <actions>
+        <action id="de.setsoftware.reviewtool.intellij.AddReviewRemarkAction"
+                class="de.setsoftware.reviewtool.intellij.AddReviewRemarkAction"
+                text="Add Review Remark (CoRT)"
+                description="Adds a CoRT review remark at the right-clicked line">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+    </actions>
 </idea-plugin>

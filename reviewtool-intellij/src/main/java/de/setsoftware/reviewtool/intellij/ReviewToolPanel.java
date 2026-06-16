@@ -659,8 +659,7 @@ public class ReviewToolPanel extends JPanel {
     }
 
     /**
-     * Adds a new review remark at the caret position of the currently active editor and merges it
-     * into the review remarks via the shared model.
+     * Adds a new review remark at the caret position of the currently active editor.
      */
     private void addRemarkAtCursor() {
         final Editor editor = FileEditorManager.getInstance(this.project).getSelectedTextEditor();
@@ -675,7 +674,15 @@ public class ReviewToolPanel extends JPanel {
             return;
         }
         final int line = editor.getCaretModel().getLogicalPosition().line + 1;
+        this.addRemarkAt(file, line);
+    }
 
+    /**
+     * Adds a new review remark for the given file and (1-based) line, asking the user for the text
+     * and the remark type, and merges it into the review remarks via the shared model. Used both by
+     * the toolbar button and the editor {@link AddReviewRemarkAction}.
+     */
+    public void addRemarkAt(VirtualFile file, int line) {
         final String text = Messages.showInputDialog(this.project,
                 "Remark for " + file.getName() + ":" + line, "Add Review Remark", null);
         if (text == null || text.trim().isEmpty()) {
@@ -696,6 +703,8 @@ public class ReviewToolPanel extends JPanel {
             final Position pos = new FileLinePosition(file.getName(), line);
             final ReviewRemark remark = ReviewRemark.create(
                     new DummyMarker(), ReviewRemarksModel.currentUser(), pos, text.trim(), types[typeChoice]);
+            // make sure the freshly added remark becomes visible as a gutter marker
+            this.remarkMarkersShown = true;
             this.remarksModel.mergeNewRemark(remark);
         } catch (final RuntimeException e) {
             this.showError("Could not add review remark", e);
