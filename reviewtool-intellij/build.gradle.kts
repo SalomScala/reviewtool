@@ -32,9 +32,12 @@ dependencies {
 }
 
 intellijPlatform {
+    // name of the plugin folder and of the zip in build/distributions
+    projectName = "CoRTOriginal"
+
     pluginConfiguration {
         id = "de.setsoftware.reviewtool"
-        name = "CoRT - Code Review Tool"
+        name = "CoRTOriginal"
         version = project.version.toString()
         ideaVersion {
             sinceBuild = "243"
