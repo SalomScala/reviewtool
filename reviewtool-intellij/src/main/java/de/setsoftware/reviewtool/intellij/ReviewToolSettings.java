@@ -14,7 +14,7 @@ import com.intellij.openapi.project.Project;
  * persisted state but stored in the IDE's password safe.
  */
 @Service(Service.Level.PROJECT)
-@State(name = "CortReviewTool", storages = @Storage("cortReviewTool.xml"))
+@State(name = "CortOriginalReviewTool", storages = @Storage("cortOriginalReviewTool.xml"))
 public final class ReviewToolSettings implements PersistentStateComponent<ReviewToolSettings.SettingsState> {
 
     /**
