@@ -52,6 +52,7 @@ import de.setsoftware.reviewtool.model.changestructure.IChangeClassifier;
 import de.setsoftware.reviewtool.model.changestructure.IStopOrdering;
 import de.setsoftware.reviewtool.model.changestructure.ITourRestructuring;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
+import de.setsoftware.reviewtool.model.changestructure.ToursInReview.ICreateToursUi;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview.ReviewRoundInfo;
 import de.setsoftware.reviewtool.ticketconnectors.youtrack.YouTrackConnector;
 
@@ -243,12 +244,20 @@ public final class ReviewToolService {
      * picks one) and the stop ordering algorithm groups and sorts the stops within each tour.
      */
     public ToursInReview createTours(IChangeData changes, IChangeSourceUi ui) {
+        return this.createTours(changes, ui, new IntellijCreateToursUi(this.project));
+    }
+
+    /**
+     * Builds the review tours like {@link #createTours(IChangeData, IChangeSourceUi)}, but with the
+     * given UI for the user decisions during the tour creation.
+     */
+    ToursInReview createTours(IChangeData changes, IChangeSourceUi ui, ICreateToursUi createToursUi) {
         return ToursInReview.create(
                 ui,
                 this.createClassificationStrategies(),
                 Arrays.<ITourRestructuring>asList(new OneStopPerPartOfFileRestructuring()),
                 this.createStopOrdering(),
-                new IntellijCreateToursUi(this.project),
+                createToursUi,
                 changes,
                 Collections.<ReviewRoundInfo>emptyList());
     }

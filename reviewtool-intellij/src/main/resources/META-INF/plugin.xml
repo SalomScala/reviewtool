@@ -30,12 +30,65 @@
         <notificationGroup id="CoRT" displayType="BALLOON"/>
     </extensions>
 
+    <!--
+        The keyboard shortcuts mirror the Eclipse plugin (Alt+4/5/6 there), using Ctrl+Alt because
+        Alt+digit opens tool windows in IntelliJ. The Linux keymaps ("Default for XWin" and the GNOME
+        and KDE keymaps derived from it) already use Ctrl+Alt+4/5/6, so Ctrl+Alt+Shift+4/5/6 is used
+        there. All shortcuts can be changed in the keymap settings.
+    -->
     <actions>
         <action id="de.setsoftware.reviewtool.intellij.AddReviewRemarkAction"
-                class="de.setsoftware.reviewtool.intellij.AddReviewRemarkAction"
-                text="Add Review Remark (CoRT)"
-                description="Adds a CoRT review remark at the right-clicked line">
+                class="de.setsoftware.reviewtool.intellij.CortActions$AddRemark"
+                text="Add Review Remark (CoRT)..."
+                description="Adds a CoRT review remark at the caret / right-clicked line, prefilled with the selected text">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt 4"/>
+            <keyboard-shortcut keymap="Default for XWin" first-keystroke="ctrl alt 4" remove="true"/>
+            <keyboard-shortcut keymap="Default for XWin" first-keystroke="ctrl alt shift 4"/>
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
         </action>
+        <action id="de.setsoftware.reviewtool.intellij.JumpToNextAction"
+                class="de.setsoftware.reviewtool.intellij.CortActions$JumpToNext"
+                text="Jump to Next Review Stop / Open Remark"
+                description="Jumps to the next unvisited review stop (review mode) or the next open remark (fixing mode)">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt 5"/>
+            <keyboard-shortcut keymap="Default for XWin" first-keystroke="ctrl alt 5" remove="true"/>
+            <keyboard-shortcut keymap="Default for XWin" first-keystroke="ctrl alt shift 5"/>
+        </action>
+        <action id="de.setsoftware.reviewtool.intellij.ShowInToursAction"
+                class="de.setsoftware.reviewtool.intellij.CortActions$ShowInTours"
+                text="Show Caret Position in Review Tours"
+                description="Selects the review stop nearest to the caret in the CoRT tool window">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt 6"/>
+            <keyboard-shortcut keymap="Default for XWin" first-keystroke="ctrl alt 6" remove="true"/>
+            <keyboard-shortcut keymap="Default for XWin" first-keystroke="ctrl alt shift 6"/>
+        </action>
+        <action id="de.setsoftware.reviewtool.intellij.NextUnvisitedStopAction"
+                class="de.setsoftware.reviewtool.intellij.CortActions$NextUnvisitedStop"
+                text="Jump to Next Unvisited Review Stop"
+                description="Jumps to the next relevant review stop that has not been visited yet"/>
+        <action id="de.setsoftware.reviewtool.intellij.NextStopAction"
+                class="de.setsoftware.reviewtool.intellij.CortActions$NextStop"
+                text="Next Review Stop"
+                description="Jumps to the next relevant review stop"/>
+        <action id="de.setsoftware.reviewtool.intellij.PreviousStopAction"
+                class="de.setsoftware.reviewtool.intellij.CortActions$PreviousStop"
+                text="Previous Review Stop"
+                description="Jumps to the previous relevant review stop"/>
+        <action id="de.setsoftware.reviewtool.intellij.NextOpenRemarkAction"
+                class="de.setsoftware.reviewtool.intellij.CortActions$NextOpenRemark"
+                text="Jump to Next Open Review Remark"
+                description="Jumps to the next review remark that still needs fixing"/>
+
+        <group id="de.setsoftware.reviewtool.intellij.CortMenu" text="CoRT Code Review" popup="true">
+            <reference ref="de.setsoftware.reviewtool.intellij.AddReviewRemarkAction"/>
+            <reference ref="de.setsoftware.reviewtool.intellij.JumpToNextAction"/>
+            <reference ref="de.setsoftware.reviewtool.intellij.ShowInToursAction"/>
+            <separator/>
+            <reference ref="de.setsoftware.reviewtool.intellij.NextUnvisitedStopAction"/>
+            <reference ref="de.setsoftware.reviewtool.intellij.PreviousStopAction"/>
+            <reference ref="de.setsoftware.reviewtool.intellij.NextStopAction"/>
+            <reference ref="de.setsoftware.reviewtool.intellij.NextOpenRemarkAction"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </group>
     </actions>
 </idea-plugin>

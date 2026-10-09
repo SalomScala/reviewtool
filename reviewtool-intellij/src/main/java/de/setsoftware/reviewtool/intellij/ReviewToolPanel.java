@@ -3,40 +3,48 @@ package de.setsoftware.reviewtool.intellij;
 import java.awt.BorderLayout;
 import java.awt.FlowLayout;
 import java.awt.datatransfer.StringSelection;
+import java.awt.event.KeyAdapter;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.EnumSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
-import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JPanel;
 import javax.swing.JSplitPane;
 import javax.swing.JTabbedPane;
-import javax.swing.JTextArea;
 import javax.swing.JTree;
 import javax.swing.ListSelectionModel;
+import javax.swing.Timer;
+import javax.swing.event.DocumentEvent;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
 
+import com.intellij.icons.AllIcons;
 import com.intellij.ide.BrowserUtil;
-import com.intellij.notification.NotificationGroupManager;
-import com.intellij.openapi.actionSystem.ActionGroup;
-import com.intellij.openapi.actionSystem.AnAction;
-import com.intellij.openapi.actionSystem.AnActionEvent;
+import com.intellij.ide.util.PropertiesComponent;
+import com.intellij.openapi.Disposable;
+import com.intellij.openapi.actionSystem.ActionManager;
+import com.intellij.openapi.actionSystem.ActionToolbar;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
-import com.intellij.notification.NotificationType;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
+import com.intellij.openapi.fileTypes.FileTypeManager;
 import com.intellij.openapi.ide.CopyPasteManager;
+import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.Task;
@@ -44,9 +52,19 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.ui.ColoredTreeCellRenderer;
+import com.intellij.ui.DocumentAdapter;
+import com.intellij.ui.JBColor;
+import com.intellij.ui.SimpleTextAttributes;
+import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBScrollPane;
+import com.intellij.ui.components.JBTextArea;
 import com.intellij.ui.table.JBTable;
+import com.intellij.ui.treeStructure.Tree;
+import com.intellij.util.ui.JBUI;
+import com.intellij.util.ui.tree.TreeUtil;
 
+import de.setsoftware.reviewtool.base.Logger;
 import de.setsoftware.reviewtool.changesources.git.GitCommitInfo;
 import de.setsoftware.reviewtool.model.EndTransition;
 import de.setsoftware.reviewtool.model.ITicketData;
@@ -54,22 +72,35 @@ import de.setsoftware.reviewtool.model.TicketInfo;
 import de.setsoftware.reviewtool.model.api.IChange;
 import de.setsoftware.reviewtool.model.api.IChangeData;
 import de.setsoftware.reviewtool.model.api.ICommit;
+import de.setsoftware.reviewtool.model.api.PositionReference;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
 import de.setsoftware.reviewtool.model.remarks.DummyMarker;
 import de.setsoftware.reviewtool.model.remarks.FileLinePosition;
+import de.setsoftware.reviewtool.model.remarks.FilePosition;
+import de.setsoftware.reviewtool.model.remarks.GlobalPosition;
 import de.setsoftware.reviewtool.model.remarks.Position;
-import de.setsoftware.reviewtool.model.remarks.RemarkType;
-import de.setsoftware.reviewtool.model.remarks.ResolutionType;
+import de.setsoftware.reviewtool.model.remarks.ReviewData;
 import de.setsoftware.reviewtool.model.remarks.ReviewRemark;
 import de.setsoftware.reviewtool.ticketconnectors.youtrack.YouTrackConnector;
 
 /**
- * The content of the CoRT tool window: a list of tickets, the commits/files belonging
- * to the selected ticket and an editor for the review remarks.
+ * The content of the CoRT tool window: a list of tickets, the commits/files, review tours, review
+ * remarks and the change summary of the selected ticket.
+ *
+ * <p>The mode combo box chooses between reviewing and fixing (like the Eclipse "Start review" and
+ * "Start fixing" commands); the toolbar actions (start, end, save) work on the ticket whose details
+ * are currently shown. Changes to the review remarks that have not been saved to the ticket system
+ * yet are marked in the "Remarks" tab and the user is asked before they would be lost.
  */
-public class ReviewToolPanel extends JPanel {
+public class ReviewToolPanel extends JPanel implements Disposable {
 
     private static final long serialVersionUID = 7882988395724508758L;
+
+    private static final String MODE_KEY = "de.setsoftware.reviewtool.mode";
+    private static final int TAB_CHANGES = 0;
+    private static final int TAB_TOURS = 1;
+    private static final int TAB_REMARKS = 2;
+    private static final String NO_TICKET_KEY = "Selected commits";
 
     /**
      * Table model for the loaded tickets.
@@ -78,7 +109,7 @@ public class ReviewToolPanel extends JPanel {
 
         private static final long serialVersionUID = 1378391971397208329L;
 
-        private static final String[] COLUMNS = {"Key", "Summary", "State", "Component"};
+        private static final String[] COLUMNS = {"Key", "Summary", "State", "Component", "Open (days)"};
 
         private List<TicketInfo> tickets = new ArrayList<>();
 
@@ -89,6 +120,15 @@ public class ReviewToolPanel extends JPanel {
 
         public TicketInfo getTicket(int row) {
             return this.tickets.get(row);
+        }
+
+        public int indexOf(String key) {
+            for (int i = 0; i < this.tickets.size(); i++) {
+                if (this.tickets.get(i).getId().equals(key)) {
+                    return i;
+                }
+            }
+            return -1;
         }
 
         @Override
@@ -107,6 +147,11 @@ public class ReviewToolPanel extends JPanel {
         }
 
         @Override
+        public Class<?> getColumnClass(int columnIndex) {
+            return columnIndex == 4 ? Integer.class : String.class;
+        }
+
+        @Override
         public Object getValueAt(int rowIndex, int columnIndex) {
             final TicketInfo t = this.tickets.get(rowIndex);
             switch (columnIndex) {
@@ -116,8 +161,10 @@ public class ReviewToolPanel extends JPanel {
                 return t.getSummaryIncludingParent();
             case 2:
                 return t.getState();
-            default:
+            case 3:
                 return t.getComponent();
+            default:
+                return t.getWaitingForDays(new Date());
             }
         }
 
@@ -148,16 +195,26 @@ public class ReviewToolPanel extends JPanel {
     private final JBTable ticketTable = new JBTable(this.ticketModel);
     private final DefaultMutableTreeNode treeRoot = new DefaultMutableTreeNode("No ticket selected");
     private final DefaultTreeModel treeModel = new DefaultTreeModel(this.treeRoot);
-    private final JTree commitTree = new JTree(this.treeModel);
-    private final JTextArea remarksArea = new JTextArea();
+    private final Tree commitTree = new Tree(this.treeModel);
+    private final JBTextArea remarksArea = new JBTextArea();
+    private final JBLabel unsavedLabel = new JBLabel();
+    private final JTabbedPane rightTabs = new JTabbedPane();
     private final IntellijMarkerFactory markerFactory;
     private final ReviewToursPanel toursPanel;
     private final ReviewSummaryPanel summaryPanel;
     private final ReviewRemarksModel remarksModel;
     private final ReviewRemarksPanel remarksPanel;
+    private final AtomicInteger detailsRequest = new AtomicInteger();
+    private final Timer reparseTimer;
 
     private volatile IChangeData lastLoadedChanges;
     private volatile String lastLoadedKey;
+    /** The ticket whose remarks are shown in the remarks editor, or null. */
+    private String currentTicketKey;
+    private String savedRemarks = "";
+    private boolean remarksDirty;
+    private boolean updatingRemarksText;
+    private boolean changingSelection;
     private boolean remarkMarkersShown;
 
     public ReviewToolPanel(Project project) {
@@ -168,59 +225,50 @@ public class ReviewToolPanel extends JPanel {
         this.summaryPanel = new ReviewSummaryPanel(project);
         this.remarksModel = new ReviewRemarksModel(
                 () -> this.remarksArea.getText(),
-                (text) -> this.remarksArea.setText(text));
+                (text) -> this.setRemarksTextFromModel(text));
         this.remarksPanel = new ReviewRemarksPanel(project, this.remarksModel);
         this.remarksModel.addListener(() -> {
             if (this.remarkMarkersShown) {
                 this.renderRemarkMarkers();
             }
+            IntellijMarkerFactory.runOnEdt(this::updateRemarksTabTitle);
         });
+        // re-parse the remarks shortly after the user stopped typing, so the tree and markers follow
+        this.reparseTimer = new Timer(700, (e) -> this.remarksModel.reload());
+        this.reparseTimer.setRepeats(false);
+        final String savedMode = PropertiesComponent.getInstance(project).getValue(MODE_KEY, ReviewToolService.FILTER_REVIEW);
+        this.modeBox.setSelectedItem(savedMode);
         this.buildUi();
     }
 
     private void buildUi() {
-        final JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        toolbar.add(this.modeBox);
-        final JButton refreshButton = new JButton("Refresh Tickets");
-        refreshButton.addActionListener((e) -> this.refreshTickets());
-        toolbar.add(refreshButton);
-        final JButton startButton = new JButton("Start Review/Fixing");
-        startButton.addActionListener((e) -> this.startWorkOnSelectedTicket());
-        toolbar.add(startButton);
-        final JButton endButton = new JButton("End Review...");
-        endButton.addActionListener((e) -> this.endReviewForSelectedTicket());
-        toolbar.add(endButton);
-        final JButton openButton = new JButton("Open in YouTrack");
-        openButton.addActionListener((e) -> this.openSelectedTicketInBrowser());
-        toolbar.add(openButton);
-        final JButton copyIdButton = new JButton("Copy ID");
-        copyIdButton.addActionListener((e) -> this.copySelectedTicketId());
-        toolbar.add(copyIdButton);
-        final JButton reviewCommitsButton = new JButton("Review Commits (no ticket)");
-        reviewCommitsButton.addActionListener((e) -> this.reviewSelectedCommits());
-        toolbar.add(reviewCommitsButton);
-        final JButton buildToursButton = new JButton("Create Tours");
-        buildToursButton.addActionListener((e) -> this.createToursForSelectedTicket());
-        toolbar.add(buildToursButton);
-        final JButton showMarkersButton = new JButton("Show Remark Markers");
-        showMarkersButton.addActionListener((e) -> this.showRemarkMarkers());
-        toolbar.add(showMarkersButton);
-        final JButton addRemarkButton = new JButton("Add Remark at Cursor");
-        addRemarkButton.addActionListener((e) -> this.addRemarkAtCursor());
-        toolbar.add(addRemarkButton);
-        final JButton clearMarkersButton = new JButton("Clear Markers");
-        clearMarkersButton.addActionListener((e) -> this.clearAllMarkers());
-        toolbar.add(clearMarkersButton);
-        this.add(toolbar, BorderLayout.NORTH);
+        final JPanel north = new JPanel(new BorderLayout());
+        final JPanel modePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0));
+        modePanel.add(new JBLabel("Mode:"));
+        this.modeBox.setToolTipText("Review: tickets ready for review. Fixing: tickets with remarks to fix.");
+        this.modeBox.addActionListener((e) -> this.modeChanged());
+        modePanel.add(this.modeBox);
+        north.add(modePanel, BorderLayout.WEST);
+        final ActionToolbar toolbar = ActionManager.getInstance().createActionToolbar(
+                "CoRT.Main", this.createToolbarActions(), true);
+        toolbar.setTargetComponent(this);
+        north.add(toolbar.getComponent(), BorderLayout.CENTER);
+        this.add(north, BorderLayout.NORTH);
 
         this.ticketTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        this.ticketTable.setAutoCreateRowSorter(true);
+        this.ticketTable.getColumnModel().getColumn(0).setPreferredWidth(JBUI.scale(80));
+        this.ticketTable.getColumnModel().getColumn(1).setPreferredWidth(JBUI.scale(300));
+        this.ticketTable.getColumnModel().getColumn(4).setPreferredWidth(JBUI.scale(60));
         this.ticketTable.getSelectionModel().addListSelectionListener((e) -> {
-            if (!e.getValueIsAdjusting()) {
-                this.loadDetailsForSelectedTicket();
+            if (!e.getValueIsAdjusting() && !this.changingSelection) {
+                this.ticketSelectionChanged();
             }
         });
+        this.updateTicketTableEmptyText();
 
         this.commitTree.setRootVisible(true);
+        this.commitTree.setCellRenderer(new CommitTreeRenderer());
         this.commitTree.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
@@ -229,37 +277,136 @@ public class ReviewToolPanel extends JPanel {
                 }
             }
         });
+        this.commitTree.addKeyListener(new KeyAdapter() {
+            @Override
+            public void keyPressed(KeyEvent e) {
+                if (e.getKeyCode() == KeyEvent.VK_ENTER) {
+                    ReviewToolPanel.this.openSelectedFile();
+                }
+            }
+        });
 
-        this.remarksArea.setLineWrap(true);
-        this.remarksArea.setWrapStyleWord(true);
-        final JPanel remarksPanel = new JPanel(new BorderLayout());
-        remarksPanel.add(new JBScrollPane(this.remarksArea), BorderLayout.CENTER);
-        final JButton saveRemarksButton = new JButton("Save Remarks to Ticket");
-        saveRemarksButton.addActionListener((e) -> this.saveRemarksForSelectedTicket());
-        remarksPanel.add(saveRemarksButton, BorderLayout.SOUTH);
-
-        final JSplitPane rightSplit = new JSplitPane(
-                JSplitPane.VERTICAL_SPLIT,
-                new JBScrollPane(this.commitTree),
-                remarksPanel);
-        rightSplit.setResizeWeight(0.6);
-
-        final JTabbedPane rightTabs = new JTabbedPane();
-        rightTabs.addTab("Changes", rightSplit);
-        rightTabs.addTab("Tours", this.toursPanel);
-        rightTabs.addTab("Remarks", this.remarksPanel);
-        rightTabs.addTab("Summary", this.summaryPanel);
+        this.rightTabs.addTab("Changes", new JBScrollPane(this.commitTree));
+        this.rightTabs.addTab("Tours", this.toursPanel);
+        this.rightTabs.addTab("Remarks", this.createRemarksTab());
+        this.rightTabs.addTab("Summary", this.summaryPanel);
 
         final JSplitPane mainSplit = new JSplitPane(
                 JSplitPane.HORIZONTAL_SPLIT,
                 new JBScrollPane(this.ticketTable),
-                rightTabs);
+                this.rightTabs);
         mainSplit.setResizeWeight(0.4);
         this.add(mainSplit, BorderLayout.CENTER);
     }
 
+    private DefaultActionGroup createToolbarActions() {
+        final DefaultActionGroup group = new DefaultActionGroup();
+        group.add(PanelActions.action("Refresh Tickets", AllIcons.Actions.Refresh, () -> true, this::refreshTickets));
+        group.addSeparator();
+        group.add(PanelActions.withTextInToolbar(PanelActions.action(
+                () -> this.isFixingMode() ? "Start Fixing" : "Start Review",
+                AllIcons.Actions.Execute,
+                () -> this.getSelectedTicketKey() != null,
+                this::startWorkOnSelectedTicket)));
+        group.add(PanelActions.withTextInToolbar(PanelActions.action(
+                () -> this.isFixingMode() ? "End Fixing..." : "End Review...",
+                AllIcons.Actions.Commit,
+                this::hasTicket,
+                this::endReviewOrFixing)));
+        group.add(PanelActions.action("Save Remarks to Ticket", AllIcons.Actions.MenuSaveall,
+                () -> this.hasTicket() && this.remarksDirty, this::saveRemarks));
+        group.add(PanelActions.action("Reload Remarks and Changes of the Ticket", AllIcons.Actions.Rerun,
+                this::hasTicket, this::reloadCurrentTicket));
+        group.addSeparator();
+        group.add(PanelActions.action("Open Ticket in YouTrack", AllIcons.General.Web,
+                () -> this.getSelectedTicketKey() != null, this::openSelectedTicketInBrowser));
+        group.add(PanelActions.action("Copy Ticket ID", AllIcons.Actions.Copy,
+                () -> this.getSelectedTicketKey() != null, this::copySelectedTicketId));
+        group.addSeparator();
+        group.add(PanelActions.action("Review Commits without Ticket...", AllIcons.Vcs.History, () -> true,
+                this::reviewSelectedCommits));
+        group.add(PanelActions.action("Create Tours", AllIcons.Actions.ShowAsTree,
+                () -> this.lastLoadedChanges != null, this::createToursForLoadedChanges));
+        group.addSeparator();
+        group.add(PanelActions.action("Add Remark at Cursor...", AllIcons.General.Add, () -> true,
+                this::addRemarkAtCursor));
+        group.add(PanelActions.action("Show Remark Markers", AllIcons.General.InspectionsEye, () -> true,
+                this::showRemarkMarkers));
+        group.add(PanelActions.action("Clear Markers", AllIcons.Actions.GC, () -> true, this::clearAllMarkers));
+        group.addSeparator();
+        group.add(PanelActions.action("Settings", AllIcons.General.Settings, () -> true,
+                () -> ShowSettingsUtil.getInstance().showSettingsDialog(this.project, ReviewToolConfigurable.class)));
+        return group;
+    }
+
+    private JPanel createRemarksTab() {
+        this.remarksArea.setLineWrap(true);
+        this.remarksArea.setWrapStyleWord(true);
+        this.remarksArea.getEmptyText().setText("The review remarks of the selected ticket are shown here");
+        this.remarksArea.getDocument().addDocumentListener(new DocumentAdapter() {
+            @Override
+            protected void textChanged(DocumentEvent e) {
+                if (!ReviewToolPanel.this.updatingRemarksText) {
+                    ReviewToolPanel.this.setRemarksDirty(true);
+                    ReviewToolPanel.this.reparseTimer.restart();
+                }
+            }
+        });
+        this.unsavedLabel.setForeground(JBColor.ORANGE);
+        this.unsavedLabel.setBorder(JBUI.Borders.empty(2, 4));
+
+        final JPanel textPanel = new JPanel(new BorderLayout());
+        final JBLabel textTitle = new JBLabel("Review remarks text (as stored in the ticket):");
+        textTitle.setBorder(JBUI.Borders.empty(2, 4));
+        textPanel.add(textTitle, BorderLayout.NORTH);
+        textPanel.add(new JBScrollPane(this.remarksArea), BorderLayout.CENTER);
+        textPanel.add(this.unsavedLabel, BorderLayout.SOUTH);
+
+        final JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, this.remarksPanel, textPanel);
+        split.setResizeWeight(0.65);
+        final JPanel panel = new JPanel(new BorderLayout());
+        panel.add(split, BorderLayout.CENTER);
+        return panel;
+    }
+
+    /**
+     * Stops the timers and removes the markers when the tool window content is disposed.
+     */
+    @Override
+    public void dispose() {
+        this.reparseTimer.stop();
+        this.toursPanel.dispose();
+        this.markerFactory.clearReviewMarkers();
+        this.markerFactory.clearStopMarkers();
+        final ReviewToolService service = this.getService();
+        if (service.getReviewPanel() == this) {
+            service.setReviewPanel(null);
+        }
+    }
+
     private ReviewToolService getService() {
         return ReviewToolService.getInstance(this.project);
+    }
+
+    /**
+     * Returns true iff the panel is in fixing mode (otherwise it is in review mode).
+     */
+    public boolean isFixingMode() {
+        return ReviewToolService.FILTER_FIXING.equals(this.modeBox.getSelectedItem());
+    }
+
+    /**
+     * Returns true iff the details of a ticket (not of a ticket-less commit selection) are shown.
+     */
+    private boolean hasTicket() {
+        return this.currentTicketKey != null && !NO_TICKET_KEY.equals(this.currentTicketKey);
+    }
+
+    private void reloadCurrentTicket() {
+        if (!this.hasTicket() || !this.confirmDiscardUnsavedRemarks()) {
+            return;
+        }
+        this.loadDetails(this.currentTicketKey, null);
     }
 
     private String getSelectedTicketKey() {
@@ -270,12 +417,49 @@ public class ReviewToolPanel extends JPanel {
         return this.ticketModel.getTicket(this.ticketTable.convertRowIndexToModel(viewRow)).getId();
     }
 
+    private void selectTicketSilently(String key) {
+        this.changingSelection = true;
+        try {
+            final int modelRow = key == null ? -1 : this.ticketModel.indexOf(key);
+            if (modelRow < 0) {
+                this.ticketTable.clearSelection();
+            } else {
+                final int viewRow = this.ticketTable.convertRowIndexToView(modelRow);
+                this.ticketTable.getSelectionModel().setSelectionInterval(viewRow, viewRow);
+            }
+        } finally {
+            this.changingSelection = false;
+        }
+    }
+
     private void showError(String message, Throwable exception) {
-        de.setsoftware.reviewtool.base.Logger.warn(message, exception);
-        ApplicationManager.getApplication().invokeLater(() ->
-                NotificationGroupManager.getInstance().getNotificationGroup("CoRT")
-                        .createNotification("Code Review Tool", message + ": " + exception, NotificationType.ERROR)
-                        .notify(this.project));
+        IntellijNotifications.error(this.project, message, exception);
+    }
+
+    private void updateTicketTableEmptyText() {
+        final boolean configured = !ReviewToolSettings.getInstance(this.project).getState().youtrackUrl.isEmpty();
+        this.ticketTable.getEmptyText().clear();
+        if (configured) {
+            this.ticketTable.getEmptyText().setText("No tickets loaded");
+            this.ticketTable.getEmptyText().appendSecondaryText("Refresh tickets",
+                    SimpleTextAttributes.LINK_ATTRIBUTES, (e) -> this.refreshTickets());
+        } else {
+            this.ticketTable.getEmptyText().setText("YouTrack is not configured yet");
+            this.ticketTable.getEmptyText().appendSecondaryText("Open settings",
+                    SimpleTextAttributes.LINK_ATTRIBUTES, (e) -> {
+                        ShowSettingsUtil.getInstance().showSettingsDialog(this.project, ReviewToolConfigurable.class);
+                        this.updateTicketTableEmptyText();
+                    });
+        }
+        this.ticketTable.getEmptyText().appendLine("Or review commits without a ticket",
+                SimpleTextAttributes.LINK_ATTRIBUTES, (e) -> this.reviewSelectedCommits());
+    }
+
+    private void modeChanged() {
+        PropertiesComponent.getInstance(this.project).setValue(MODE_KEY, (String) this.modeBox.getSelectedItem());
+        if (!ReviewToolSettings.getInstance(this.project).getState().youtrackUrl.isEmpty()) {
+            this.refreshTickets();
+        }
     }
 
     /**
@@ -283,6 +467,7 @@ public class ReviewToolPanel extends JPanel {
      */
     public void refreshTickets() {
         final String filterName = (String) this.modeBox.getSelectedItem();
+        this.updateTicketTableEmptyText();
         new Task.Backgroundable(this.project, "Loading tickets from YouTrack", true) {
             @Override
             public void run(ProgressIndicator indicator) {
@@ -290,8 +475,12 @@ public class ReviewToolPanel extends JPanel {
                     final YouTrackConnector connector =
                             ReviewToolPanel.this.getService().createTicketConnector();
                     final List<TicketInfo> tickets = connector.getTicketsForFilter(filterName);
-                    ApplicationManager.getApplication().invokeLater(() ->
-                            ReviewToolPanel.this.ticketModel.setTickets(tickets));
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        final String selected = ReviewToolPanel.this.currentTicketKey;
+                        ReviewToolPanel.this.ticketModel.setTickets(tickets);
+                        // keep the ticket whose details are shown selected, if it is still listed
+                        ReviewToolPanel.this.selectTicketSilently(selected);
+                    });
                 } catch (final RuntimeException e) {
                     ReviewToolPanel.this.showError("Could not load tickets from YouTrack", e);
                 }
@@ -299,26 +488,91 @@ public class ReviewToolPanel extends JPanel {
         }.queue();
     }
 
-    private void loadDetailsForSelectedTicket() {
+    private void ticketSelectionChanged() {
         final String key = this.getSelectedTicketKey();
-        if (key == null) {
+        if (key == null || key.equals(this.currentTicketKey)) {
             return;
         }
+        if (!this.confirmDiscardUnsavedRemarks()) {
+            // stay on the ticket with the unsaved remarks
+            this.selectTicketSilently(this.currentTicketKey);
+            return;
+        }
+        this.loadDetails(key, null);
+    }
+
+    /**
+     * Asks the user what to do with unsaved remark changes before they would be replaced. Returns
+     * false if the current action shall be cancelled.
+     */
+    private boolean confirmDiscardUnsavedRemarks() {
+        if (!this.remarksDirty || !this.hasTicket()) {
+            return true;
+        }
+        final int answer = Messages.showYesNoCancelDialog(this.project,
+                "The review remarks of " + this.currentTicketKey + " have changes that have not been saved to"
+                + " the ticket yet. Save them now?",
+                "Unsaved Review Remarks", "Save", "Discard", "Cancel", Messages.getWarningIcon());
+        if (answer == Messages.CANCEL) {
+            return false;
+        }
+        if (answer == Messages.YES) {
+            this.saveRemarks();
+        }
+        return true;
+    }
+
+    /**
+     * Loads the remarks and changes of the given ticket in the background. If the user selects
+     * another ticket in the meantime, the outdated results are discarded.
+     *
+     * @param afterChangesLoaded Called on the EDT after the changes have been loaded (may be null).
+     */
+    private void loadDetails(String key, Runnable afterChangesLoaded) {
+        final int request = this.detailsRequest.incrementAndGet();
+        this.currentTicketKey = key;
+        this.setRemarksText("");
+        this.remarksArea.getEmptyText().setText("Loading review remarks of " + key + "...");
+        this.treeModel.setRoot(new DefaultMutableTreeNode("Loading changes of " + key + "..."));
         new Task.Backgroundable(this.project, "Loading details for " + key, true) {
             @Override
             public void run(ProgressIndicator indicator) {
-                ReviewToolPanel.this.loadRemarks(key);
-                ReviewToolPanel.this.loadChanges(key, indicator);
+                ReviewToolPanel.this.loadRemarks(key, request);
+                ReviewToolPanel.this.loadChanges(key, indicator, request, afterChangesLoaded);
             }
         }.queue();
     }
 
-    private void loadRemarks(String key) {
+    private boolean isCurrentRequest(int request) {
+        return request == this.detailsRequest.get();
+    }
+
+    private void loadRemarks(String key, int request) {
         try {
             final ITicketData ticket = this.getService().createTicketConnector().loadTicket(key);
             final String remarks = ticket == null ? "" : ticket.getReviewData();
+            int round = 1;
+            String reviewer = null;
+            try {
+                if (ticket != null) {
+                    round = Math.max(1, ticket.getCurrentRound());
+                    reviewer = ticket.getReviewerForRound(round);
+                }
+            } catch (final RuntimeException e) {
+                // the remarks are still usable, they are just attributed to the local user / round 1
+                Logger.warn("could not determine the review round of " + key, e);
+            }
+            final int finalRound = round;
+            final String finalReviewer = reviewer;
             ApplicationManager.getApplication().invokeLater(() -> {
-                this.remarksArea.setText(remarks);
+                if (!this.isCurrentRequest(request)) {
+                    return;
+                }
+                this.remarksArea.getEmptyText().setText("No review remarks yet");
+                this.remarksModel.setRoundInfo(finalRound, finalReviewer);
+                this.setRemarksText(remarks);
+                // show the remarks of the ticket in the editors right away
+                this.remarkMarkersShown = true;
                 this.remarksModel.reload();
             });
         } catch (final RuntimeException e) {
@@ -326,17 +580,25 @@ public class ReviewToolPanel extends JPanel {
         }
     }
 
-    private void loadChanges(String key, ProgressIndicator indicator) {
+    private void loadChanges(String key, ProgressIndicator indicator, int request, Runnable afterChangesLoaded) {
         try {
             final IChangeData changes = this.getService().getRepositoryChanges(
                     key, new ChangeSourceUiAdapter(this.project, indicator));
-            this.lastLoadedChanges = changes;
-            this.lastLoadedKey = key;
             final DefaultMutableTreeNode newRoot = this.buildCommitTree(key, changes);
             ApplicationManager.getApplication().invokeLater(() -> {
+                if (!this.isCurrentRequest(request)) {
+                    return;
+                }
+                this.lastLoadedChanges = changes;
+                this.lastLoadedKey = key;
                 this.treeModel.setRoot(newRoot);
-                for (int i = 0; i < this.commitTree.getRowCount(); i++) {
-                    this.commitTree.expandRow(i);
+                TreeUtil.expandAll(this.commitTree);
+                if (changes.getMatchedCommits().isEmpty()) {
+                    IntellijNotifications.warn(this.project, "No commits have been found for " + key
+                            + ". Check the commit message pattern in the settings if this is unexpected.");
+                }
+                if (afterChangesLoaded != null) {
+                    afterChangesLoaded.run();
                 }
             });
         } catch (final ProcessCanceledException e) {
@@ -380,9 +642,7 @@ public class ReviewToolPanel extends JPanel {
         final File file = ((FileNode) userObject).localFile;
         final VirtualFile virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(file);
         if (virtualFile == null) {
-            Messages.showInfoMessage(this.project,
-                    "The file " + file + " does not exist in the working copy (anymore).",
-                    "Code Review Tool");
+            IntellijNotifications.warn(this.project, "The file " + file + " does not exist in the working copy (anymore).");
             return;
         }
         FileEditorManager.getInstance(this.project).openFile(virtualFile, true);
@@ -393,18 +653,25 @@ public class ReviewToolPanel extends JPanel {
         if (key == null) {
             return;
         }
-        final boolean review = ReviewToolService.FILTER_REVIEW.equals(this.modeBox.getSelectedItem());
-        new Task.Backgroundable(this.project, "Changing ticket state of " + key, true) {
+        final boolean review = !this.isFixingMode();
+        // the ticket is reloaded after the start, so unsaved remark changes are saved first
+        final String remarksToSave = key.equals(this.currentTicketKey) && this.remarksDirty
+                ? this.remarksArea.getText() : null;
+        new Task.Backgroundable(this.project, (review ? "Starting review of " : "Starting fixing of ") + key, true) {
             @Override
             public void run(ProgressIndicator indicator) {
                 try {
                     final YouTrackConnector connector =
                             ReviewToolPanel.this.getService().createTicketConnector();
+                    if (remarksToSave != null) {
+                        connector.saveReviewData(key, remarksToSave);
+                    }
                     if (review) {
                         connector.startReviewing(key);
                     } else {
                         connector.startFixing(key);
                     }
+                    ApplicationManager.getApplication().invokeLater(() -> ReviewToolPanel.this.workStarted(key, review));
                 } catch (final RuntimeException e) {
                     ReviewToolPanel.this.showError("Could not change state of " + key, e);
                 }
@@ -412,37 +679,99 @@ public class ReviewToolPanel extends JPanel {
         }.queue();
     }
 
-    private void endReviewForSelectedTicket() {
-        final String key = this.getSelectedTicketKey();
-        if (key == null) {
+    /**
+     * Called after the ticket state was changed at the start of a review / fixing. Reloads the
+     * ticket (the review round changed) and continues like the Eclipse plugin: for a review the
+     * tours are created, for fixing the remarks are shown.
+     */
+    private void workStarted(String key, boolean review) {
+        IntellijNotifications.info(this.project, (review ? "Review of " : "Fixing of ") + key + " started.");
+        if (review) {
+            this.loadDetails(key, () -> this.createToursForLoadedChanges());
+        } else {
+            this.loadDetails(key, () -> {
+                this.rightTabs.setSelectedIndex(TAB_REMARKS);
+                if (this.remarksModel.findFirstOpenRemark() != null) {
+                    this.remarksPanel.jumpToNextOpenRemark();
+                }
+            });
+        }
+        this.refreshTickets();
+    }
+
+    private void endReviewOrFixing() {
+        if (!this.hasTicket()) {
             return;
         }
-        final String remarks = this.remarksArea.getText();
-        new Task.Backgroundable(this.project, "Ending review for " + key, true) {
+        this.remarksModel.reload();
+        if (this.isFixingMode()) {
+            this.endFixing(this.currentTicketKey);
+        } else {
+            this.endReview(this.currentTicketKey);
+        }
+    }
+
+    private void endReview(String key) {
+        final ReviewData reviewData = this.remarksModel.getReviewData();
+        final boolean temporary = hasTemporaryMarkers(reviewData);
+        final int open = this.remarksModel.countOpenRemarks();
+        final EndTransition.Type preferredType;
+        if (temporary) {
+            preferredType = EndTransition.Type.PAUSE;
+        } else if (open > 0) {
+            preferredType = EndTransition.Type.REJECTION;
+        } else {
+            preferredType = EndTransition.Type.OK;
+        }
+        final String summary = open + " remark(s) need fixing" + (temporary ? ", there are temporary markers" : "");
+        final String remarksBefore = this.remarksArea.getText();
+
+        new Task.Backgroundable(this.project, "Ending review of " + key, true) {
             @Override
             public void run(ProgressIndicator indicator) {
                 try {
-                    final YouTrackConnector connector =
-                            ReviewToolPanel.this.getService().createTicketConnector();
-                    final List<EndTransition> transitions = connector.getPossibleTransitionsForReviewEnd(key);
-                    final String[] options = new String[transitions.size()];
-                    for (int i = 0; i < transitions.size(); i++) {
-                        options[i] = transitions.get(i).getNameForUser();
-                    }
-                    final int[] choice = new int[] {-1};
-                    ApplicationManager.getApplication().invokeAndWait(() ->
-                            choice[0] = Messages.showChooseDialog(
-                                    ReviewToolPanel.this.project,
-                                    "Choose the new state for " + key + ":",
-                                    "End Review",
-                                    null,
-                                    options,
-                                    options.length > 0 ? options[0] : null));
-                    if (choice[0] < 0) {
+                    final YouTrackConnector connector = ReviewToolPanel.this.getService().createTicketConnector();
+                    final List<EndTransition> transitions = new ArrayList<>();
+                    transitions.add(new EndTransition("Pause", null, EndTransition.Type.PAUSE));
+                    transitions.addAll(connector.getPossibleTransitionsForReviewEnd(key));
+
+                    final AtomicReference<EndTransition> chosen = new AtomicReference<>();
+                    final AtomicReference<String> remarks = new AtomicReference<>();
+                    ApplicationManager.getApplication().invokeAndWait(() -> {
+                        final EndReviewDialog dialog = new EndReviewDialog(ReviewToolPanel.this.project, key,
+                                transitions, remarksBefore, preferredType, summary);
+                        if (!dialog.showAndGet() || dialog.getSelectedTransition() == null) {
+                            return;
+                        }
+                        if (dialog.getSelectedTransition().getType() != EndTransition.Type.PAUSE
+                                && hasTemporaryMarkers(parse(dialog.getRemarks()))) {
+                            final int answer = Messages.showYesNoDialog(ReviewToolPanel.this.project,
+                                    "There are still temporary markers. Finish the review anyway?",
+                                    "Temporary Markers", Messages.getWarningIcon());
+                            if (answer != Messages.YES) {
+                                return;
+                            }
+                        }
+                        chosen.set(dialog.getSelectedTransition());
+                        remarks.set(dialog.getRemarks());
+                    });
+                    if (chosen.get() == null) {
                         return;
                     }
-                    connector.saveReviewData(key, remarks);
-                    connector.changeStateAtReviewEnd(key, transitions.get(choice[0]));
+                    connector.saveReviewData(key, remarks.get());
+                    final boolean pause = chosen.get().getType() == EndTransition.Type.PAUSE;
+                    if (!pause) {
+                        connector.changeStateAtReviewEnd(key, chosen.get());
+                    }
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        ReviewToolPanel.this.remarksSaved(key, remarks.get());
+                        if (!pause) {
+                            ReviewToolPanel.this.clearAllMarkers();
+                        }
+                        IntellijNotifications.info(ReviewToolPanel.this.project, pause
+                                ? "Review of " + key + " paused, the remarks have been saved."
+                                : "Review of " + key + " ended: " + chosen.get().getNameForUser());
+                    });
                     ReviewToolPanel.this.refreshTickets();
                 } catch (final RuntimeException e) {
                     ReviewToolPanel.this.showError("Could not end review for " + key, e);
@@ -451,17 +780,80 @@ public class ReviewToolPanel extends JPanel {
         }.queue();
     }
 
-    private void saveRemarksForSelectedTicket() {
-        final String key = this.getSelectedTicketKey();
-        if (key == null) {
+    private void endFixing(String key) {
+        final int open = this.remarksModel.countOpenRemarks();
+        if (open > 0) {
+            final int answer = Messages.showYesNoDialog(this.project,
+                    open + " remark(s) have not been marked as processed yet. You can mark them in the \"Remarks\""
+                    + " tab or with the gutter icon of the remark marker. Finish fixing anyway?",
+                    "Open Remarks", "Finish Fixing", "Continue Fixing", Messages.getWarningIcon());
+            if (answer != Messages.YES) {
+                return;
+            }
+        } else {
+            final int answer = Messages.showYesNoDialog(this.project,
+                    "Save the remarks and set " + key + " to 'ready for review'?",
+                    "End Fixing", "End Fixing", "Cancel", Messages.getQuestionIcon());
+            if (answer != Messages.YES) {
+                return;
+            }
+        }
+        final String remarks = this.remarksArea.getText();
+        new Task.Backgroundable(this.project, "Ending fixing of " + key, true) {
+            @Override
+            public void run(ProgressIndicator indicator) {
+                try {
+                    final YouTrackConnector connector = ReviewToolPanel.this.getService().createTicketConnector();
+                    connector.saveReviewData(key, remarks);
+                    connector.changeStateToReadyForReview(key);
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        ReviewToolPanel.this.remarksSaved(key, remarks);
+                        ReviewToolPanel.this.clearAllMarkers();
+                        IntellijNotifications.info(ReviewToolPanel.this.project,
+                                "Fixing of " + key + " ended, the ticket is ready for review again.");
+                    });
+                    ReviewToolPanel.this.refreshTickets();
+                } catch (final RuntimeException e) {
+                    ReviewToolPanel.this.showError("Could not end fixing for " + key, e);
+                }
+            }
+        }.queue();
+    }
+
+    private static ReviewData parse(String remarks) {
+        try {
+            return ReviewData.parse(Collections.<Integer, String>emptyMap(), DummyMarker.FACTORY, remarks);
+        } catch (final RuntimeException e) {
+            return new ReviewData();
+        }
+    }
+
+    private static boolean hasTemporaryMarkers(ReviewData data) {
+        try {
+            return data.hasTemporaryMarkers();
+        } catch (final RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Saves the review remarks of the current ticket to the ticket system.
+     */
+    private void saveRemarks() {
+        if (!this.hasTicket()) {
             return;
         }
+        final String key = this.currentTicketKey;
         final String remarks = this.remarksArea.getText();
         new Task.Backgroundable(this.project, "Saving review remarks for " + key, true) {
             @Override
             public void run(ProgressIndicator indicator) {
                 try {
                     ReviewToolPanel.this.getService().createTicketConnector().saveReviewData(key, remarks);
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        ReviewToolPanel.this.remarksSaved(key, remarks);
+                        IntellijNotifications.info(ReviewToolPanel.this.project, "Review remarks saved to " + key + ".");
+                    });
                 } catch (final RuntimeException e) {
                     ReviewToolPanel.this.showError("Could not save review remarks for " + key, e);
                 }
@@ -469,13 +861,68 @@ public class ReviewToolPanel extends JPanel {
         }.queue();
     }
 
+    private void remarksSaved(String key, String savedText) {
+        if (!key.equals(this.currentTicketKey)) {
+            return;
+        }
+        this.savedRemarks = savedText;
+        this.setRemarksDirty(!savedText.equals(this.remarksArea.getText()));
+    }
+
+    /**
+     * Replaces the remarks text with freshly loaded remarks (not a user change).
+     */
+    private void setRemarksText(String text) {
+        this.updatingRemarksText = true;
+        try {
+            this.remarksArea.setText(text);
+        } finally {
+            this.updatingRemarksText = false;
+        }
+        this.savedRemarks = text;
+        this.setRemarksDirty(false);
+    }
+
+    /**
+     * Called by the remarks model when it changed the remarks (e.g. a remark was added or resolved).
+     */
+    private void setRemarksTextFromModel(String text) {
+        this.updatingRemarksText = true;
+        try {
+            this.remarksArea.setText(text);
+        } finally {
+            this.updatingRemarksText = false;
+        }
+        this.setRemarksDirty(!text.equals(this.savedRemarks));
+    }
+
+    private void setRemarksDirty(boolean dirty) {
+        this.remarksDirty = dirty && this.hasTicket();
+        this.unsavedLabel.setText(this.remarksDirty
+                ? "Unsaved changes - not yet saved to " + this.currentTicketKey
+                    + " (use \"Save Remarks to Ticket\" or end the review/fixing)"
+                : "");
+        this.updateRemarksTabTitle();
+    }
+
+    private void updateRemarksTabTitle() {
+        final int open = this.remarksModel.countOpenRemarks();
+        final String title = "Remarks" + (open > 0 ? " (" + open + " open)" : "") + (this.remarksDirty ? " *" : "");
+        if (this.rightTabs.getTabCount() > TAB_REMARKS) {
+            this.rightTabs.setTitleAt(TAB_REMARKS, title);
+        }
+    }
+
     private void openSelectedTicketInBrowser() {
         final String key = this.getSelectedTicketKey();
         if (key == null) {
             return;
         }
-        BrowserUtil.browse(
-                this.getService().createTicketConnector().getLinkSettings().createLinkFor(key));
+        try {
+            BrowserUtil.browse(this.getService().createTicketConnector().getLinkSettings().createLinkFor(key));
+        } catch (final RuntimeException e) {
+            this.showError("Could not open " + key, e);
+        }
     }
 
     private void copySelectedTicketId() {
@@ -487,15 +934,12 @@ public class ReviewToolPanel extends JPanel {
     }
 
     /**
-     * Builds the review tours for the changes of the currently selected ticket and shows them in
-     * the "Tours" tab.
+     * Builds the review tours for the changes loaded last and shows them in the "Tours" tab.
      */
-    private void createToursForSelectedTicket() {
+    private void createToursForLoadedChanges() {
         final IChangeData changes = this.lastLoadedChanges;
         if (changes == null) {
-            Messages.showInfoMessage(this.project,
-                    "Please select a ticket first so that its changes can be loaded.",
-                    "Code Review Tool");
+            IntellijNotifications.info(this.project, "Please select a ticket first so that its changes can be loaded.");
             return;
         }
         final String key = this.lastLoadedKey;
@@ -511,6 +955,7 @@ public class ReviewToolPanel extends JPanel {
                     ApplicationManager.getApplication().invokeLater(() -> {
                         ReviewToolPanel.this.toursPanel.setTours(tours);
                         ReviewToolPanel.this.summaryPanel.setTours(tours);
+                        ReviewToolPanel.this.rightTabs.setSelectedIndex(TAB_TOURS);
                     });
                 } catch (final ProcessCanceledException e) {
                     throw e;
@@ -526,6 +971,9 @@ public class ReviewToolPanel extends JPanel {
      * involving the ticket system.
      */
     private void reviewSelectedCommits() {
+        if (!this.confirmDiscardUnsavedRemarks()) {
+            return;
+        }
         new Task.Backgroundable(this.project, "Loading recent commits", true) {
             @Override
             public void run(ProgressIndicator indicator) {
@@ -553,24 +1001,33 @@ public class ReviewToolPanel extends JPanel {
     }
 
     private void loadChangesForCommits(Set<String> revisionIds) {
+        final int request = this.detailsRequest.incrementAndGet();
         new Task.Backgroundable(this.project, "Loading changes for selected commits", true) {
             @Override
             public void run(ProgressIndicator indicator) {
                 try {
                     final IChangeData changes = ReviewToolPanel.this.getService().getChangesForCommits(
                             revisionIds, new ChangeSourceUiAdapter(ReviewToolPanel.this.project, indicator));
-                    ReviewToolPanel.this.lastLoadedChanges = changes;
-                    ReviewToolPanel.this.lastLoadedKey = "Selected commits";
                     final DefaultMutableTreeNode newRoot =
-                            ReviewToolPanel.this.buildCommitTree("Selected commits", changes);
+                            ReviewToolPanel.this.buildCommitTree(NO_TICKET_KEY, changes);
                     ApplicationManager.getApplication().invokeLater(() -> {
-                        ReviewToolPanel.this.treeModel.setRoot(newRoot);
-                        for (int i = 0; i < ReviewToolPanel.this.commitTree.getRowCount(); i++) {
-                            ReviewToolPanel.this.commitTree.expandRow(i);
+                        if (!ReviewToolPanel.this.isCurrentRequest(request)) {
+                            return;
                         }
-                        ReviewToolPanel.this.remarksArea.setText(
-                                "Reviewing selected commits (no ticket). Use \"Create Tours\" to build the tours"
-                                + " and the \"Summary\" tab for an overview.");
+                        ReviewToolPanel.this.lastLoadedChanges = changes;
+                        ReviewToolPanel.this.lastLoadedKey = NO_TICKET_KEY;
+                        ReviewToolPanel.this.currentTicketKey = NO_TICKET_KEY;
+                        ReviewToolPanel.this.selectTicketSilently(null);
+                        ReviewToolPanel.this.treeModel.setRoot(newRoot);
+                        TreeUtil.expandAll(ReviewToolPanel.this.commitTree);
+                        ReviewToolPanel.this.remarksModel.setRoundInfo(1, null);
+                        ReviewToolPanel.this.setRemarksText("");
+                        ReviewToolPanel.this.remarksArea.getEmptyText().setText(
+                                "Reviewing selected commits without a ticket - remarks are not stored in a ticket");
+                        ReviewToolPanel.this.remarksModel.reload();
+                        ReviewToolPanel.this.rightTabs.setSelectedIndex(TAB_CHANGES);
+                        IntellijNotifications.info(ReviewToolPanel.this.project, "Loaded the changes of "
+                                + revisionIds.size() + " commit(s). Use \"Create Tours\" to build the review tours.");
                     });
                 } catch (final ProcessCanceledException e) {
                     throw e;
@@ -591,15 +1048,15 @@ public class ReviewToolPanel extends JPanel {
     }
 
     /**
-     * Renders a gutter marker (with a resolution popup) for every remark that has a file/line
-     * position. Must be triggered on the EDT (it is, from the model listener and the buttons).
+     * Renders a gutter marker (with a resolution popup) for every remark that refers to a file.
+     * Remarks for a whole file are shown at its first line.
      */
     private void renderRemarkMarkers() {
         this.markerFactory.clearReviewMarkers();
         IntellijMarkerFactory.runOnEdt(() -> ApplicationManager.getApplication().runReadAction(() -> {
             for (final ReviewRemark remark : this.remarksModel.getAllRemarks()) {
                 final Position pos = Position.parse(remark.getPositionString());
-                if (pos.getShortFileName() == null || pos.getLine() <= 0) {
+                if (pos.getShortFileName() == null) {
                     continue;
                 }
                 final VirtualFile file = IntellijFileResolver.findByShortName(this.project, pos.getShortFileName());
@@ -607,51 +1064,13 @@ public class ReviewToolPanel extends JPanel {
                     continue;
                 }
                 final boolean warning = remark.needsFixing();
-                final String tooltip = "[" + remark.getRemarkType() + " / " + remark.getResolution() + "] "
-                        + remark.getText();
-                this.markerFactory.addRemarkMarker(file, pos.getLine(), warning, tooltip, this.buildRemarkPopup(remark));
+                final String tooltip = "[" + ReviewRemarksPanel.typeLabel(remark) + " / "
+                        + remark.getResolution().name().toLowerCase().replace('_', ' ') + "] " + remark.getText()
+                        + "\n(click for actions)";
+                this.markerFactory.addRemarkMarker(file, Math.max(1, pos.getLine()), warning, tooltip,
+                        RemarkActions.create(this.project, this.remarksModel, () -> remark, null));
             }
         }));
-    }
-
-    private ActionGroup buildRemarkPopup(ReviewRemark remark) {
-        final DefaultActionGroup group = new DefaultActionGroup();
-        group.add(remarkAction("Mark as fixed", () -> this.remarksModel.resolve(remark, ResolutionType.FIXED, null)));
-        group.add(remarkAction("Mark as fixed (with comment)...",
-                () -> this.resolveWithComment(remark, ResolutionType.FIXED)));
-        group.add(remarkAction("Mark as won't fix...",
-                () -> this.resolveWithComment(remark, ResolutionType.WONT_FIX)));
-        group.add(remarkAction("Mark as unclear...",
-                () -> this.resolveWithComment(remark, ResolutionType.QUESTION)));
-        group.add(remarkAction("Reopen", () -> this.remarksModel.resolve(remark, ResolutionType.OPEN, null)));
-        group.add(remarkAction("Add comment...", () -> this.addCommentToRemark(remark)));
-        group.add(remarkAction("Delete remark", () -> this.remarksModel.delete(remark)));
-        return group;
-    }
-
-    private static AnAction remarkAction(String text, Runnable action) {
-        return new AnAction(text) {
-            @Override
-            public void actionPerformed(AnActionEvent e) {
-                action.run();
-            }
-        };
-    }
-
-    private void resolveWithComment(ReviewRemark remark, ResolutionType resolution) {
-        final String comment = Messages.showInputDialog(this.project,
-                "Comment (optional):", "Resolve Review Remark", null);
-        if (comment == null) {
-            return;
-        }
-        this.remarksModel.resolve(remark, resolution, comment);
-    }
-
-    private void addCommentToRemark(ReviewRemark remark) {
-        final String comment = Messages.showInputDialog(this.project, "Comment:", "Add Comment", null);
-        if (comment != null && !comment.trim().isEmpty()) {
-            this.remarksModel.addComment(remark, comment);
-        }
     }
 
     private void clearAllMarkers() {
@@ -661,55 +1080,147 @@ public class ReviewToolPanel extends JPanel {
     }
 
     /**
-     * Adds a new review remark at the caret position of the currently active editor.
+     * Adds a new review remark at the caret position of the currently active editor. Without an
+     * editor, a global remark can be added.
      */
-    private void addRemarkAtCursor() {
+    public void addRemarkAtCursor() {
         final Editor editor = FileEditorManager.getInstance(this.project).getSelectedTextEditor();
         if (editor == null) {
-            Messages.showInfoMessage(this.project,
-                    "Please open a file and place the caret where the remark should be added.",
-                    "Code Review Tool");
+            this.addRemarkAt(null, 0, "");
             return;
         }
         final VirtualFile file = FileDocumentManager.getInstance().getFile(editor.getDocument());
-        if (file == null) {
-            return;
-        }
         final int line = editor.getCaretModel().getLogicalPosition().line + 1;
-        this.addRemarkAt(file, line);
+        final String selected = editor.getSelectionModel().getSelectedText();
+        this.addRemarkAt(file, line, selected == null ? "" : selected);
     }
 
     /**
-     * Adds a new review remark for the given file and (1-based) line, asking the user for the text
-     * and the remark type, and merges it into the review remarks via the shared model. Used both by
-     * the toolbar button and the editor {@link AddReviewRemarkAction}.
+     * Adds a new review remark for the given file and (1-based) line, asking the user for the kind,
+     * the text and the reference (line, file or global) in one dialog, and merges it into the review
+     * remarks of the current review round via the shared model. Used by the toolbar button and the
+     * editor action {@link CortActions.AddRemark}.
+     *
+     * @param file The file, or null for a global remark.
+     * @param prefillText The text the remark is prefilled with (e.g. the selected text).
      */
-    public void addRemarkAt(VirtualFile file, int line) {
-        final String text = Messages.showInputDialog(this.project,
-                "Remark for " + file.getName() + ":" + line, "Add Review Remark", null);
-        if (text == null || text.trim().isEmpty()) {
-            return;
+    public void addRemarkAt(VirtualFile file, int line, String prefillText) {
+        final Set<PositionReference> allowed;
+        final String location;
+        if (file == null) {
+            allowed = EnumSet.of(PositionReference.GLOBAL);
+            location = null;
+        } else if (line <= 0) {
+            allowed = EnumSet.of(PositionReference.FILE, PositionReference.GLOBAL);
+            location = file.getName();
+        } else {
+            allowed = EnumSet.allOf(PositionReference.class);
+            location = file.getName() + ":" + line;
         }
-        final RemarkType[] types = RemarkType.values();
-        final String[] typeNames = new String[types.length];
-        for (int i = 0; i < types.length; i++) {
-            typeNames[i] = types[i].name();
-        }
-        final int typeChoice = Messages.showChooseDialog(this.project,
-                "Type of the remark:", "Add Review Remark", null, typeNames, typeNames[0]);
-        if (typeChoice < 0) {
+        final CreateRemarkDialog dialog = new CreateRemarkDialog(this.project, location, prefillText, allowed);
+        if (!dialog.showAndGet()) {
             return;
         }
 
         try {
-            final Position pos = new FileLinePosition(file.getName(), line);
+            final Position pos;
+            switch (dialog.getReference()) {
+            case LINE:
+                pos = new FileLinePosition(file.getName(), line);
+                break;
+            case FILE:
+                pos = new FilePosition(file.getName());
+                break;
+            case GLOBAL:
+            default:
+                pos = new GlobalPosition();
+                break;
+            }
             final ReviewRemark remark = ReviewRemark.create(
-                    new DummyMarker(), ReviewRemarksModel.currentUser(), pos, text.trim(), types[typeChoice]);
+                    new DummyMarker(), this.remarksModel.getReviewer(), pos, dialog.getRemarkText(),
+                    dialog.getRemarkType());
             // make sure the freshly added remark becomes visible as a gutter marker
             this.remarkMarkersShown = true;
             this.remarksModel.mergeNewRemark(remark);
+            if (this.currentTicketKey == null) {
+                IntellijNotifications.warn(this.project,
+                        "No ticket is selected, so the remark can not be saved to a ticket.");
+            }
         } catch (final RuntimeException e) {
             this.showError("Could not add review remark", e);
+        }
+    }
+
+    /**
+     * Jumps to the next open remark in fixing mode and to the next unvisited stop in review mode
+     * (the counterpart of the Eclipse "Jump to next review stop or open review remark" command).
+     */
+    public void jumpToNext() {
+        if (this.isFixingMode()) {
+            this.jumpToNextOpenRemark();
+        } else {
+            this.jumpToNextUnvisitedStop();
+        }
+    }
+
+    public void jumpToNextOpenRemark() {
+        this.rightTabs.setSelectedIndex(TAB_REMARKS);
+        this.remarksPanel.jumpToNextOpenRemark();
+    }
+
+    public void jumpToNextUnvisitedStop() {
+        this.rightTabs.setSelectedIndex(TAB_TOURS);
+        this.toursPanel.jumpToNextUnvisitedStop();
+    }
+
+    /**
+     * Jumps to the previous (-1) or next (1) relevant stop.
+     */
+    public void navigateStops(int direction) {
+        this.rightTabs.setSelectedIndex(TAB_TOURS);
+        this.toursPanel.navigate(direction);
+    }
+
+    /**
+     * Selects the stop nearest to the given position in the "Tours" tab.
+     */
+    public void showInTours(VirtualFile file, int line) {
+        this.rightTabs.setSelectedIndex(TAB_TOURS);
+        this.toursPanel.showNearestStop(new File(file.getPath()), line);
+    }
+
+    /**
+     * Renderer for the commit tree with file type icons.
+     */
+    private static final class CommitTreeRenderer extends ColoredTreeCellRenderer {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public void customizeCellRenderer(JTree tree, Object value, boolean selected, boolean expanded,
+                boolean leaf, int row, boolean hasFocus) {
+            if (!(value instanceof DefaultMutableTreeNode)) {
+                return;
+            }
+            final DefaultMutableTreeNode node = (DefaultMutableTreeNode) value;
+            final Object userObject = node.getUserObject();
+            if (userObject instanceof FileNode) {
+                final FileNode fileNode = (FileNode) userObject;
+                final String name = fileNode.localFile.getName();
+                this.setIcon(FileTypeManager.getInstance().getFileTypeByFileName(name).getIcon());
+                this.append(name);
+                final String parent = fileNode.label.length() > name.length()
+                        ? fileNode.label.substring(0, fileNode.label.length() - name.length()) : "";
+                if (!parent.isEmpty()) {
+                    this.append("  " + parent, SimpleTextAttributes.GRAYED_ATTRIBUTES);
+                }
+                this.setToolTipText(fileNode.localFile.getPath());
+            } else if (node.isRoot()) {
+                this.setIcon(AllIcons.Nodes.Folder);
+                this.append(String.valueOf(userObject), SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
+            } else {
+                this.setIcon(AllIcons.Vcs.CommitNode);
+                this.append(String.valueOf(userObject));
+            }
         }
     }
 
