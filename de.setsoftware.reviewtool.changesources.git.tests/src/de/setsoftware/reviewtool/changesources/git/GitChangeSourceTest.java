@@ -210,6 +210,26 @@ public class GitChangeSourceTest {
     }
 
     @Test
+    public void testRootCommit() throws Exception {
+        //without an initial empty commit, the commit for the ticket is the root commit and has to be
+        //  compared with the empty tree (which is not contained in the repository as an object)
+        final TestdataRepo repo = new TestdataRepo(false);
+        try {
+            repo.addFile("A", 3).commit("TIC-1: Initial commit");
+
+            final GitChangeSource src = createCs(repo);
+            final IChangeData actual = src.getRepositoryChanges("TIC-1", createUi());
+            final List<? extends ICommit> commits = actual.getMatchedCommits();
+            assertEquals(1, commits.size());
+            final List<? extends IChange> changes = commits.get(0).getChanges();
+            assertEquals(1, changes.size());
+            assertEquals("A", changes.get(0).getTo().getPath());
+        } finally {
+            repo.clean();
+        }
+    }
+
+    @Test
     public void testBinaryChange() throws Exception {
         final TestdataRepo repo = new TestdataRepo();
         try {

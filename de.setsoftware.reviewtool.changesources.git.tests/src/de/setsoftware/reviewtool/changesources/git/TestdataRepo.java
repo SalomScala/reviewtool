@@ -35,6 +35,15 @@ public class TestdataRepo {
     private final Map<String, String> commitMap = new LinkedHashMap<>();
 
     public TestdataRepo() throws IOException, GitAPIException {
+        this(true);
+    }
+
+    /**
+     * Creates the repository.
+     * @param initialEmptyCommit If true, the repository starts with an empty commit, otherwise the
+     *      first commit created by the test is the root commit.
+     */
+    public TestdataRepo(boolean initialEmptyCommit) throws IOException, GitAPIException {
         //stub out git's access to the system
         SystemReader.setInstance(new SystemReader() {
 
@@ -82,8 +91,13 @@ public class TestdataRepo {
         });
         this.baseDir = Files.createTempDirectory("pdptesttemp").toFile();
         Git.init().setDirectory(this.baseDir).call();
-        try (Git git = Git.open(this.baseDir)) {
-            this.storeCommitId(git.commit().setMessage("Initial empty commit").setAllowEmpty(true).call());
+        if (initialEmptyCommit) {
+            try (Git git = Git.open(this.baseDir)) {
+                this.storeCommitId(git.commit().setMessage("Initial empty commit").setAllowEmpty(true).call());
+            }
+        } else {
+            //keep the numbering of the commits independent of the empty commit
+            this.commitCounter = 1;
         }
     }
 
