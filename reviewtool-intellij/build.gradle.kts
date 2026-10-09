@@ -36,12 +36,32 @@ intellijPlatform {
     projectName = "CoRTOriginal"
 
     pluginConfiguration {
-        id = "de.setsoftware.reviewtool"
+        id = "de.setsoftware.reviewtool.cortoriginal"
         name = "CoRTOriginal"
         version = project.version.toString()
         ideaVersion {
             sinceBuild = "243"
             untilBuild = provider { null }
         }
+    }
+}
+
+// Gives the extensions in the packaged plugin.xml their own IDs, so that the plugin can be
+// installed next to another CoRT plugin (the source plugin.xml stays unchanged).
+tasks.patchPluginXml {
+    doLast {
+        val file = outputFile.get().asFile
+        val replacements = mapOf(
+            "<toolWindow\\s+id=\"CoRT\"" to "<toolWindow id=\"CoRTOriginal\"",
+            "id=\"de\\.setsoftware\\.reviewtool\\.intellij\\.settings\"" to "id=\"de.setsoftware.reviewtool.cortoriginal.settings\"",
+            "displayName=\"Code Review Tool \\(CoRT\\)\"" to "displayName=\"Code Review Tool (CoRTOriginal)\"",
+        )
+        var text = file.readText()
+        for ((pattern, replacement) in replacements) {
+            val regex = Regex(pattern)
+            check(regex.containsMatchIn(text)) { "plugin.xml does not contain $pattern" }
+            text = regex.replace(text, replacement)
+        }
+        file.writeText(text)
     }
 }
