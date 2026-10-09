@@ -514,7 +514,7 @@ public class ReviewToolPanel extends JPanel {
                     }
                 } catch (final ProcessCanceledException e) {
                     throw e;
-                } catch (final RuntimeException e) {
+                } catch (final Exception e) {
                     ReviewToolPanel.this.showError("Could not load commits", e);
                 }
             }
