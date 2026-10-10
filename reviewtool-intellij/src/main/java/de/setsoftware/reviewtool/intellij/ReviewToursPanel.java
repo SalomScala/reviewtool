@@ -126,6 +126,7 @@ public final class ReviewToursPanel extends JPanel {
     private ToursInReview tours;
     private Runnable allStopsVisitedListener;
     private Consumer<Stop> addRemarkListener;
+    private Runnable progressListener;
     private int lastNotVisitedCount = -1;
     private boolean hideIrrelevant;
     private boolean hideChecked;
@@ -459,6 +460,20 @@ public final class ReviewToursPanel extends JPanel {
     }
 
     /**
+     * Sets the action that is called when the review progress changed (lines viewed, stops checked).
+     */
+    void setProgressListener(Runnable listener) {
+        this.progressListener = listener;
+    }
+
+    /**
+     * Returns the statistics on the viewed lines and checked stops.
+     */
+    ViewStatistics getStatistics() {
+        return this.statistics;
+    }
+
+    /**
      * Sets the action that adds a review remark for a stop (used by the context menu).
      */
     void setAddRemarkListener(Consumer<Stop> listener) {
@@ -486,6 +501,9 @@ public final class ReviewToursPanel extends JPanel {
         // the visit state in the details may have changed
         this.updateDetails();
         this.checkAllStopsVisited();
+        if (this.progressListener != null) {
+            this.progressListener.run();
+        }
     }
 
     /**

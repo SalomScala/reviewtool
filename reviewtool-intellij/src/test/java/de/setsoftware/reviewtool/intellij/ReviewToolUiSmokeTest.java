@@ -327,6 +327,29 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
             }
             panel.setAllStopsVisitedListener(null);
 
+            // the progress (viewed lines, checked stops, tour choices) survives a restart
+            final Stop checkedStop = tours.getTopmostTours().get(0).getStops().get(0);
+            panel.toggleChecked(checkedStop);
+            panel.getStatistics().mark(checkedStop.getAbsoluteFile(), 1, 3);
+            final java.nio.file.Path progressFile = Files.createTempDirectory("cort-progress").resolve("DEMO-1.properties");
+            ReviewProgress.capture(2, "one tour per commit", Collections.singleton("whitespace"),
+                    panel.getStatistics(), tours).save(progressFile);
+            final ReviewProgress loaded = ReviewProgress.load(progressFile);
+            assertNotNull(loaded);
+            assertEquals(2, loaded.getRound());
+            assertEquals("one tour per commit", loaded.getTourStructure());
+            assertEquals(Collections.singleton("whitespace"), loaded.getIrrelevantClassifications());
+            assertEquals(1, loaded.getCheckedStopCount());
+            final de.setsoftware.reviewtool.model.viewtracking.ViewStatistics fresh =
+                    new de.setsoftware.reviewtool.model.viewtracking.ViewStatistics();
+            assertEquals(1, loaded.applyTo(fresh, tours));
+            assertTrue(fresh.isMarkedAsChecked(checkedStop));
+            assertEquals(panel.getStatistics().getStatisticsPerFile().get(checkedStop.getAbsoluteFile()).getCountsPerLine(),
+                    fresh.getStatisticsPerFile().get(checkedStop.getAbsoluteFile()).getCountsPerLine());
+            assertNull("a missing file means no saved progress",
+                    ReviewProgress.load(progressFile.resolveSibling("missing.properties")));
+            panel.toggleChecked(checkedStop);
+
             // a new file is compared with empty content (and not with an empty line)
             final Stop mainStop = tours.getStopsFor(new File(repo, "src/main/java/demo/Main.java").getAbsoluteFile())
                     .get(0);
@@ -361,6 +384,21 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
                 final boolean importStop = stop.getMostRecentFragment().getFrom().getLine() < 5;
                 assertEquals(excerpt.getNewText(), importStop, excerpt.getNewText().contains("import java.util.List"));
                 assertEquals(excerpt.getNewText(), !importStop, excerpt.getNewText().contains("multiply"));
+
+                // remarks can be added in the diff: the lines of both sides are mapped to the current file
+                final com.intellij.diff.requests.SimpleDiffRequest stopRequest = StopDiffViewer.createRequest(
+                        this.getProject(), stop, StopDiffViewer.load(stop), true);
+                final StopDiffViewer.StopDiffTarget target = stopRequest.getUserData(StopDiffViewer.STOP_DIFF_TARGET);
+                assertNotNull(target);
+                assertSame(stop, target.getStop());
+                final int stopLine = stop.getMostRecentFragment().getFrom().getLine();
+                assertEquals(stopLine, target.toFileLine(true, excerpt.toNewExcerptLine(stopLine - 1)));
+                final int oldSideLine = target.toFileLine(false, 0);
+                assertTrue("line " + oldSideLine, oldSideLine >= 1 && oldSideLine <= stopLine);
+                final List<com.intellij.openapi.actionSystem.AnAction> diffActions =
+                        stopRequest.getUserData(com.intellij.diff.util.DiffUserDataKeys.CONTEXT_ACTIONS);
+                assertTrue("the diff toolbar offers \"Add Review Remark\"",
+                        diffActions != null && diffActions.get(0) instanceof CortActions.AddRemark);
             }
             // marking the selected stop as checked keeps it selected, navigating selects the new stop
             assertSame(shown, panel.getSelectedStop());

@@ -1,5 +1,6 @@
 package de.setsoftware.reviewtool.model.viewtracking;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -22,6 +23,29 @@ public class ViewStatisticsForFile {
         for (int line = fromLine; line <= toLine; line++) {
             this.increaseCount(line);
         }
+    }
+
+    /**
+     * Returns how often the file has been viewed without information on the viewed part.
+     */
+    public int getUnspecificCount() {
+        return this.unspecificCount;
+    }
+
+    /**
+     * Returns how often each (one-based) line has been viewed (lines that have not been viewed are missing).
+     */
+    public Map<Integer, Integer> getCountsPerLine() {
+        return Collections.unmodifiableMap(this.countsPerLine);
+    }
+
+    /**
+     * Replaces the statistics with the given ones (e.g. ones that have been saved before).
+     */
+    void restore(int unspecific, Map<Integer, Integer> counts) {
+        this.unspecificCount = unspecific;
+        this.countsPerLine.clear();
+        this.countsPerLine.putAll(counts);
     }
 
     private void increaseCount(int line) {
