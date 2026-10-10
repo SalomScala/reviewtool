@@ -130,6 +130,36 @@ Fixing → Fixing-Ende in der Sandbox-IDE, gegen eine lokale YouTrack-Attrappe):
   Refactoring; Änderungen innerhalb einer Zeile zählen als +1/−1 (vorher „+0/−0“).
 - Ticket-Tabelle: Mindestbreiten für Key und Status.
 
+Vierte Runde (Usability-Test mit einem Ticket aus mehreren Commits, mit Fehlerfällen – YouTrack nicht erreichbar,
+falsches Token, Neustart mit ungespeicherten Anmerkungen –, Ticketwechsel während des Reviews, Tastatur und hellem Theme):
+
+- **Verständliche YouTrack-Fehler:** „YouTrack is not reachable at … – check the URL and your network connection“,
+  „YouTrack rejected the token (HTTP 401: …)“ bzw. die Fehlerbeschreibung von YouTrack statt einer rohen
+  `IOException`. Die Benachrichtigung bietet „Retry“ (Tickets laden, Anmerkungen laden, Start, Ende, Speichern) und bei
+  Verbindungs-/Token-Problemen „Open settings“ an.
+- **Anmerkungen gesperrt, solange sie nicht geladen sind:** Während des Ladens und nach einem Ladefehler ist der
+  Anmerkungstext schreibgeschützt; Hinzufügen, Speichern und Review-/Fixing-Ende werden mit Erklärung verweigert, die
+  Leiste über den Tabs zeigt den Fehler (siehe Fehlerliste).
+- **Lokale Sicherung ungespeicherter Anmerkungen:** Lässt sich nicht speichern und wird die IDE geschlossen, bietet das
+  Plugin beim nächsten Laden des Tickets „Restore them“ / „Discard them“ an (einmal pro Sitzung; mit Warnung, falls
+  sich die Anmerkungen im Ticket inzwischen geändert haben).
+- **Ticketwechsel:** Touren, Summary, Stop-Markierungen, Anmerkungsbaum und -marker des vorherigen Tickets
+  verschwinden sofort (vorher blieben sie stehen, bis das neue Ticket geladen war, bzw. ganz). Schaut man während eines
+  Reviews ein anderes Ticket an, werden die Touren des laufenden Reviews samt Fortschritt beiseitegelegt und bei der
+  Rückkehr wiederhergestellt. „End Review…“ bei angezeigtem fremdem Ticket beendet nicht mehr dessen (gar nicht
+  gestartetes) Review, sondern bietet an, das laufende Ticket anzuzeigen.
+- **Review-Ende anbieten:** Sobald der letzte relevante Stop angesehen bzw. abgehakt ist, erscheint „All relevant stops
+  of … have been viewed – End review…“.
+- **Anmerkung zum Stop:** Mit einem im Tour-Baum ausgewählten Stop bezieht sich „Add Remark“ auf dessen Zeile (vorher
+  nur „Global“, solange kein Editor offen war); zusätzlich „Add Remark…“ im Kontextmenü des Stops.
+- „Mark as Checked“ behält die Auswahl im Tour-Baum (vorher stand rechts danach „No stop selected“).
+- **Changes-Tab:** neue/gelöschte Dateien in den IntelliJ-VCS-Farben und mit „new“/„deleted“; gelöschte Dateien
+  werden mit ihrem alten Pfad angezeigt.
+- **Diff:** Neue Dateien werden mit einer leeren Datei verglichen (vorher „2 differences“ wegen einer leeren Zeile
+  links); die Titel zeigen „ed6a915, 2026-10-10 12:15“ statt Hash und Unix-Zeit.
+- Ein Wechsel des Themes/Farbschemas zeichnet die Stop-Markierungen in den neuen Farben neu.
+- Die Ticketzeile übernimmt nach dem Laden den aktuellen Status, ohne die Spalten „Prev. state/reviewers“ zu verlieren.
+
 ## Gefundene und behobene Fehler
 
 - **Unsichtbare Gutter-Icons** (zweite Runde, im Praxistest gefunden): Die Gutter-Icons der Stops und Anmerkungen
@@ -153,3 +183,9 @@ Fixing → Fixing-Ende in der Sandbox-IDE, gegen eine lokale YouTrack-Attrappe):
   dem Password-Safe. Jetzt geschieht das im Hintergrund (bzw. das Token wird zwischengespeichert), und der Sprung
   verwendet Offsets. Im abschließenden Durchlauf enthielt das IDE-Log keine Fehler mehr.
 - Anmerkungen wurden immer Runde 1 zugeordnet (siehe oben).
+- **Datenverlust bei nicht erreichbarem YouTrack** (vierte Runde): Der Connector behandelte jeden Fehler beim Laden
+  eines Tickets wie „Ticket nicht gefunden“, das Panel zeigte dann leere Anmerkungen. Eine neue Anmerkung und das
+  anschließende Speichern (oder ein Review-Ende) hätten die vorhandenen Anmerkungen im Ticket überschrieben. Jetzt
+  gilt nur HTTP 404 als „nicht gefunden“, alle anderen Fehler werden gemeldet, und die Anmerkungen bleiben gesperrt,
+  bis sie geladen werden konnten (Tests in `YouTrackConnectorTest`). Auch ein abgelehnter Statuswechsel wegen
+  falschem Token/URL wird nicht mehr verschluckt.

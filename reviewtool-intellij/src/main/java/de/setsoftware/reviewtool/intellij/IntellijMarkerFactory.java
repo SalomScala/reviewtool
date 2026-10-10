@@ -14,6 +14,7 @@ import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.application.Application;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Document;
+import com.intellij.openapi.editor.colors.EditorColorsListener;
 import com.intellij.openapi.editor.colors.EditorColorsManager;
 import com.intellij.openapi.editor.impl.DocumentMarkupModel;
 import com.intellij.openapi.editor.markup.GutterIconRenderer;
@@ -66,6 +67,19 @@ public final class IntellijMarkerFactory {
 
     public IntellijMarkerFactory(Project project) {
         this.project = project;
+        // the colors of the stop markers depend on the editor color scheme, so they are rendered
+        //  anew when it changes (e.g. when switching from a dark to a light theme)
+        project.getMessageBus().connect(project).subscribe(EditorColorsManager.TOPIC,
+                (EditorColorsListener) (scheme) -> runOnEdt(this::rerenderStopMarkers));
+    }
+
+    /**
+     * Renders all stop markers again (with the colors of the current editor color scheme).
+     */
+    void rerenderStopMarkers() {
+        for (final IntellijStopMarker marker : new ArrayList<>(this.stopMarkers)) {
+            ApplicationManager.getApplication().runReadAction(marker::render);
+        }
     }
 
     public Project getProject() {

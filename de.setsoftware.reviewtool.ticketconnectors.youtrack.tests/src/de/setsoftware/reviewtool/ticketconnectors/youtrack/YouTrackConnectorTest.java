@@ -20,7 +20,6 @@ import org.junit.Test;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
-import de.setsoftware.reviewtool.base.ReviewtoolException;
 import de.setsoftware.reviewtool.model.TicketInfo;
 
 /**
@@ -147,8 +146,45 @@ public class YouTrackConnectorTest {
         try {
             this.createConnector().testConnection();
             fail("a rejected token must be reported");
-        } catch (final ReviewtoolException e) {
-            // expected
+        } catch (final YouTrackException e) {
+            assertEquals(YouTrackException.Problem.UNAUTHORIZED, e.getProblem());
+            assertTrue(e.getMessage(), e.getMessage().contains("rejected the token"));
+            assertTrue(e.isConfigurationProblem());
+        }
+    }
+
+    @Test
+    public void testUnreachableServer() {
+        final YouTrackConnector connector = this.createConnector();
+        this.server.stop(0);
+        try {
+            connector.loadTicket("TIC-1");
+            fail("an unreachable server must not look like a missing ticket");
+        } catch (final YouTrackException e) {
+            assertEquals(YouTrackException.Problem.UNREACHABLE, e.getProblem());
+            assertTrue(e.getMessage(), e.getMessage().contains("not reachable"));
+        }
+    }
+
+    @Test
+    public void testMissingTicket() {
+        this.server.createContext("/api/issues/NOPE-1", (exchange) -> {
+            respond(exchange, 404, "{\"error\":\"Not Found\",\"error_description\":\"Entity not found\"}");
+        });
+        assertEquals(null, this.createConnector().loadTicket("NOPE-1"));
+    }
+
+    @Test
+    public void testServerErrorWithDescription() {
+        this.server.createContext("/api/issues/TIC-2", (exchange) -> {
+            respond(exchange, 500, "{\"error\":\"server_error\",\"error_description\":\"database down\"}");
+        });
+        try {
+            this.createConnector().loadTicket("TIC-2");
+            fail("a server error must be reported");
+        } catch (final YouTrackException e) {
+            assertEquals(YouTrackException.Problem.SERVER_ERROR, e.getProblem());
+            assertTrue(e.getMessage(), e.getMessage().contains("HTTP 500") && e.getMessage().contains("database down"));
         }
     }
 

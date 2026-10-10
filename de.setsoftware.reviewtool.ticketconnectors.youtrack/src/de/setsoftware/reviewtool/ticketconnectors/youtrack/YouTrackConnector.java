@@ -351,9 +351,14 @@ public class YouTrackConnector implements ITicketConnector {
         final JsonValue result;
         try {
             result = this.performGet(getUrl);
-        } catch (final ReviewtoolException e) {
-            Logger.debug("could not load ticket " + ticketKey + ": " + e);
-            return null;
+        } catch (final YouTrackException e) {
+            // only a ticket that does not exist is reported as null; other problems (e.g. an unreachable
+            //  server) must not look like a ticket without remarks, otherwise saving would overwrite them
+            if (e.getProblem() == YouTrackException.Problem.NOT_FOUND) {
+                Logger.debug("ticket " + ticketKey + " not found: " + e.getMessage());
+                return null;
+            }
+            throw e;
         }
         if (!result.isObject() || result.asObject().get("idReadable") == null) {
             return null;
@@ -418,7 +423,10 @@ public class YouTrackConnector implements ITicketConnector {
         }
         try {
             this.setState(ticketKey, targetStateName);
-        } catch (final ReviewtoolException e) {
+        } catch (final YouTrackException e) {
+            if (e.isConfigurationProblem()) {
+                throw e;
+            }
             //YouTrack workflow rules can veto state changes; mimic the behavior of the
             //  other connectors and silently stay in the old state in this case
             Logger.info("Could not transition " + ticketKey + " to " + targetStateName + ": " + e);
@@ -592,32 +600,84 @@ public class YouTrackConnector implements ITicketConnector {
     }
 
     /**
-     * Sends and receives data.
+     * Sends and receives data. Problems are reported as {@link YouTrackException}s with a message that
+     * tells the user what to do.
      */
     private void communicate(String requestUrl, String method, String data,
             Consumer<InputStream> resultConsumer) throws IOException {
         Logger.debug("communicate to YouTrack: " + method + " " + this.trimArgs(requestUrl));
         final HttpURLConnection c = (HttpURLConnection) new URL(requestUrl).openConnection();
-        c.setRequestMethod(method);
-        c.addRequestProperty("Content-Type", "application/json");
-        c.addRequestProperty("Accept", "application/json");
-        c.addRequestProperty("Authorization", "Bearer " + this.token);
-        c.setDoOutput(data != null);
-        c.connect();
-        if (data != null) {
-            try (OutputStream outputStream = c.getOutputStream()) {
-                outputStream.write(data.getBytes("UTF-8"));
-            }
-        }
         try {
-            final InputStream s = c.getInputStream();
-            resultConsumer.accept(s);
-            s.close();
-        } catch (final IOException e) {
-            throw new IOException(e.getMessage() + "; server said: " + this.readErrorStream(c), e);
+            final int status;
+            try {
+                c.setRequestMethod(method);
+                c.addRequestProperty("Content-Type", "application/json");
+                c.addRequestProperty("Accept", "application/json");
+                c.addRequestProperty("Authorization", "Bearer " + this.token);
+                c.setDoOutput(data != null);
+                c.connect();
+                if (data != null) {
+                    try (OutputStream outputStream = c.getOutputStream()) {
+                        outputStream.write(data.getBytes("UTF-8"));
+                    }
+                }
+                status = c.getResponseCode();
+            } catch (final IOException e) {
+                throw new YouTrackException(YouTrackException.Problem.UNREACHABLE,
+                        "YouTrack is not reachable at " + this.url + " (" + e.getMessage() + ")."
+                        + " Check the URL in the settings and your network connection.", e);
+            }
+            if (status >= 400) {
+                throw this.createErrorForStatus(status, method, requestUrl, this.readErrorStream(c));
+            }
+            try (InputStream s = c.getInputStream()) {
+                resultConsumer.accept(s);
+            }
         } finally {
             c.disconnect();
         }
+    }
+
+    private YouTrackException createErrorForStatus(int status, String method, String requestUrl, String body) {
+        final String details = this.errorDescription(body);
+        final Exception cause = new IOException("HTTP " + status + " for " + method + " "
+                + this.trimArgs(requestUrl) + ": " + body);
+        if (status == 401 || status == 403) {
+            return new YouTrackException(YouTrackException.Problem.UNAUTHORIZED,
+                    "YouTrack rejected the token (HTTP " + status + (details.isEmpty() ? "" : ": " + details) + ")."
+                    + " Check the permanent token in the settings; it may have expired or lack permissions.",
+                    cause);
+        } else if (status == 404) {
+            return new YouTrackException(YouTrackException.Problem.NOT_FOUND,
+                    "Not found on YouTrack (HTTP 404): " + this.trimArgs(requestUrl)
+                    + (details.isEmpty() ? "" : " - " + details), cause);
+        } else {
+            return new YouTrackException(YouTrackException.Problem.SERVER_ERROR,
+                    "YouTrack answered with HTTP " + status + " for " + method + " " + this.trimArgs(requestUrl)
+                    + (details.isEmpty() ? "" : ": " + details), cause);
+        }
+    }
+
+    /**
+     * Extracts the readable part of a YouTrack error answer ("error_description" or "error"), or a
+     * shortened version of the answer if it has another format.
+     */
+    private String errorDescription(String body) {
+        try {
+            final JsonValue json = Json.parse(body);
+            if (json.isObject()) {
+                for (final String key : Arrays.asList("error_description", "error")) {
+                    final JsonValue value = json.asObject().get(key);
+                    if (value != null && value.isString() && !value.asString().isEmpty()) {
+                        return value.asString();
+                    }
+                }
+            }
+        } catch (final ParseException | UnsupportedOperationException e) {
+            // not JSON, use the text itself
+        }
+        final String trimmed = body.trim();
+        return trimmed.length() > 200 ? trimmed.substring(0, 200) + "..." : trimmed;
     }
 
     private String readErrorStream(HttpURLConnection c) {

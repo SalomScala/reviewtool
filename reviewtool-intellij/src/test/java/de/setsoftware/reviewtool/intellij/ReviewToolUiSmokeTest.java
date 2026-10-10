@@ -215,6 +215,11 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
                     (com.intellij.openapi.editor.ex.EditorGutterComponentEx) this.myFixture.getEditor().getGutter();
             assertEquals(1, gutter.getGutterRenderers(1).size());
             assertEquals(1, gutter.getGutterRenderers(2).size());
+            // a changed color scheme (e.g. light instead of dark) renders the stop markers anew, once
+            com.intellij.openapi.application.ApplicationManager.getApplication().getMessageBus()
+                    .syncPublisher(com.intellij.openapi.editor.colors.EditorColorsManager.TOPIC)
+                    .globalSchemeChange(null);
+            assertEquals(2, this.myFixture.findAllGutters().size());
         } finally {
             markerFactory.clearReviewMarkers();
             markerFactory.clearStopMarkers();
@@ -304,6 +309,35 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
             assertEquals(notVisited - 1, panel.countRelevantStopsNotFullyVisited());
             panel.toggleChecked(firstStop);
 
+            // when the last relevant stop has been checked, the listener (offering to end the review) is called
+            final java.util.concurrent.atomic.AtomicInteger allVisited = new java.util.concurrent.atomic.AtomicInteger();
+            panel.setAllStopsVisitedListener(allVisited::incrementAndGet);
+            final List<Stop> checked = new ArrayList<>();
+            for (final Tour tour : tours.getTopmostTours()) {
+                for (final Stop stop : tour.getStops()) {
+                    if (!stop.isIrrelevantForReview(tours.getIrrelevantCategories())) {
+                        panel.toggleChecked(stop);
+                        checked.add(stop);
+                    }
+                }
+            }
+            assertEquals(1, allVisited.get());
+            for (final Stop stop : checked) {
+                panel.toggleChecked(stop);
+            }
+            panel.setAllStopsVisitedListener(null);
+
+            // a new file is compared with empty content (and not with an empty line)
+            final Stop mainStop = tours.getStopsFor(new File(repo, "src/main/java/demo/Main.java").getAbsoluteFile())
+                    .get(0);
+            final com.intellij.diff.requests.SimpleDiffRequest request = StopDiffViewer.createRequest(
+                    this.getProject(), mainStop, StopDiffViewer.load(mainStop), false);
+            assertTrue(request.getContents().get(0) instanceof com.intellij.diff.contents.EmptyContent);
+            // the titles show the abbreviated commit hash and a readable time instead of "hash (seconds)"
+            final String afterTitle = request.getContentTitles().get(1);
+            assertTrue(afterTitle, afterTitle.matches("After \\([0-9a-f]{7}, \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}\\)"));
+            assertEquals("4711", StopDiffViewer.describeRevisionText("4711"));
+
             panel.navigate(1);
             assertNotNull("navigating to the first stop opens its file",
                     FileEditorManager.getInstance(this.getProject()).getSelectedTextEditor());
@@ -328,6 +362,14 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
                 assertEquals(excerpt.getNewText(), importStop, excerpt.getNewText().contains("import java.util.List"));
                 assertEquals(excerpt.getNewText(), !importStop, excerpt.getNewText().contains("multiply"));
             }
+            // marking the selected stop as checked keeps it selected, navigating selects the new stop
+            assertSame(shown, panel.getSelectedStop());
+            panel.toggleChecked(shown);
+            assertSame(shown, panel.getSelectedStop());
+            panel.toggleChecked(shown);
+            panel.navigate(1);
+            assertNotSame(shown, panel.getSelectedStop());
+            assertSame(details.getShownStop(), panel.getSelectedStop());
             panel.jumpToNextUnvisitedStop();
             panel.showNearestStop(new File(repo, "src/main/java/demo/Calculator.java"), 18);
 
