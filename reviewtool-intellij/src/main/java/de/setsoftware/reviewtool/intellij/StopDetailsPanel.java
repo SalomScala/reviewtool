@@ -11,6 +11,7 @@ import com.intellij.diff.requests.MessageDiffRequest;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.Project;
+import com.intellij.ui.components.JBCheckBox;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.util.ui.JBUI;
 
@@ -19,8 +20,9 @@ import de.setsoftware.reviewtool.model.changestructure.Stop;
 
 /**
  * Shows details of the selected review stop below the tours: a short description (file, lines,
- * classification, visit state) and the diff of the stop's file, scrolled to the stop. This is the
- * IntelliJ counterpart of the Eclipse "Review stop info" view with its combined diff viewer.
+ * classification, visit state) and the diff of the stop's file, scrolled to the stop. By default, the
+ * diff only contains the changed sections of the stop (with some context) instead of the whole file.
+ * This is the IntelliJ counterpart of the Eclipse "Review stop info" view with its combined diff viewer.
  */
 final class StopDetailsPanel extends JPanel {
 
@@ -28,18 +30,31 @@ final class StopDetailsPanel extends JPanel {
 
     private final transient Project project;
     private final JBLabel header = new JBLabel();
+    private final JBCheckBox onlyStopChanges = new JBCheckBox("Only the stop's changes");
     private final transient DiffRequestPanel diffPanel;
     private final AtomicInteger request = new AtomicInteger();
     private transient Stop shownStop;
     private boolean noStopShown;
     private volatile Stop loadedStop;
+    private transient StopDiffViewer.StopDiffData loadedData;
 
     StopDetailsPanel(Project project, Disposable parent) {
         super(new BorderLayout());
         this.project = project;
         this.diffPanel = DiffManager.getInstance().createRequestPanel(project, parent, null);
         this.header.setBorder(JBUI.Borders.empty(4));
-        this.add(this.header, BorderLayout.NORTH);
+        this.onlyStopChanges.setSelected(StopDiffViewer.isOnlyStopChanges());
+        this.onlyStopChanges.setToolTipText(
+                "Show only the changed sections of the stop (with " + StopDiffViewer.CONTEXT_LINES
+                + " lines of context) instead of the whole file with all its changes");
+        this.onlyStopChanges.addActionListener((e) -> {
+            StopDiffViewer.setOnlyStopChanges(this.onlyStopChanges.isSelected());
+            this.showLoadedDiff();
+        });
+        final JPanel north = new JPanel(new BorderLayout());
+        north.add(this.header, BorderLayout.CENTER);
+        north.add(this.onlyStopChanges, BorderLayout.EAST);
+        this.add(north, BorderLayout.NORTH);
         this.add(this.diffPanel.getComponent(), BorderLayout.CENTER);
         this.showStop(null, null);
     }
@@ -76,6 +91,7 @@ final class StopDetailsPanel extends JPanel {
         }
         this.shownStop = stop;
         this.loadedStop = null;
+        this.loadedData = null;
         if (stop.isBinaryChange()) {
             this.diffPanel.setRequest(new MessageDiffRequest("Binary change - no textual diff"));
             return;
@@ -86,8 +102,9 @@ final class StopDetailsPanel extends JPanel {
                 final StopDiffViewer.StopDiffData data = StopDiffViewer.load(stop);
                 ApplicationManager.getApplication().invokeLater(() -> {
                     if (current == this.request.get() && !this.project.isDisposed()) {
-                        this.diffPanel.setRequest(StopDiffViewer.createRequest(this.project, stop, data));
+                        this.loadedData = data;
                         this.loadedStop = stop;
+                        this.showLoadedDiff();
                     }
                 });
             } catch (final Exception e) {
@@ -99,6 +116,32 @@ final class StopDetailsPanel extends JPanel {
                 });
             }
         });
+    }
+
+    /**
+     * Shows the diff of the loaded stop, with only the stop's changes or the whole file.
+     */
+    private void showLoadedDiff() {
+        final Stop stop = this.loadedStop;
+        final StopDiffViewer.StopDiffData data = this.loadedData;
+        if (stop == null || data == null) {
+            return;
+        }
+        this.diffPanel.setRequest(StopDiffViewer.createRequest(
+                this.project, stop, data, this.onlyStopChanges.isSelected()));
+    }
+
+    /**
+     * Returns true iff only the stop's changes are shown in the diff (and not the whole file).
+     */
+    boolean isShowingOnlyStopChanges() {
+        return this.onlyStopChanges.isSelected() && this.loadedData != null && this.loadedData.getExcerpt() != null;
+    }
+
+    void setOnlyStopChanges(boolean value) {
+        this.onlyStopChanges.setSelected(value);
+        StopDiffViewer.setOnlyStopChanges(value);
+        this.showLoadedDiff();
     }
 
     /**

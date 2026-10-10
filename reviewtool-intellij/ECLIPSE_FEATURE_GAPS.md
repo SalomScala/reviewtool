@@ -45,8 +45,8 @@ IntelliJ-Plugin (`reviewtool-intellij`). Legende:
 | **Show in Review content** (Alt+6): nächstgelegenen Stop zur Cursor-Position zeigen | – | ✅ Neu („Show Caret Position in Review Tours“) |
 | **Fortschrittsbalken** (irrelevant / besucht / teilweise / unbesucht) | Nur Anzahl Tours/Stops | ✅ Neu: `ReviewProgressBar` |
 | Filter (checked / visited / irrelevant) werden gespeichert | Nicht gespeichert | ✅ Neu |
-| Icons je Stop nach Besuchsgrad (IconGrammar-Formen) | Text „(unvisited)“ | 🟡 Status-Icons (checked / besucht / teilweise / unbesucht / irrelevant), keine IconGrammar-Formen |
-| Stop-Info-View mit kombiniertem Diff | „Show Stop Diff“ öffnet IntelliJ-Diff | ✅ Detailbereich unter dem Tour-Baum: Stop-Infos (Datei, Zeilen, Klassifikation, Besuchsstatus, Tour) und eingebetteter Diff, zur Stop-Zeile gescrollt; ein-/ausblendbar. 🟡 Diff der ganzen Datei statt nur der Hunks des Stops |
+| Icons je Stop nach Besuchsgrad (IconGrammar-Formen) | Text „(unvisited)“ | ✅ Port der IconGrammar (`StopIconGrammar`, `StopIcons`): Form aus Klassifikation, Quellordner, Historie und Größe des Stops (ähnliche Stops sehen ähnlich aus), Farbe von Gelb (angefangen) bis Grün (vollständig gesehen) – Umriss = maximaler, Füllung = durchschnittlicher Besuchsgrad; unbesucht in Textfarbe, irrelevant grau, „checked“ als grüner Haken. Tours zeigen die häufigste Form ihrer Stops, die aktive Tour einen roten Punkt. HiDPI- und Dark-Theme-fähig |
+| Stop-Info-View mit kombiniertem Diff | „Show Stop Diff“ öffnet IntelliJ-Diff | ✅ Detailbereich unter dem Tour-Baum: Stop-Infos (Datei, Zeilen, Klassifikation, Besuchsstatus, Tour) und eingebetteter Diff, zur Stop-Zeile gescrollt; ein-/ausblendbar. ✅ Neu: Der Diff zeigt standardmäßig nur die geänderten Abschnitte des Stops (mit 3 Kontextzeilen, Zeilennummern der Originaldatei, andere Änderungen der Datei ausgeblendet); per „Only the stop's changes“ umschaltbar auf die ganze Datei, gilt auch für „Show Stop Diff“ |
 | Open in text editor | – | ➖ IntelliJ öffnet Textdateien ohnehin im Texteditor |
 | **Lokale Änderungen verfolgen** (Stop-Positionen folgen Edits, `ChangeManager`) | – | ✅ Nach dem Speichern werden die lokalen Änderungen (entprellt, im Hintergrund) analysiert und die Stops nachgeführt: Zeilennummern im Baum, Marker, Sprungziele und View-Tracking passen wieder; abschaltbar („Track Local Changes“, Port von „Stop local change tracking“) |
 
@@ -54,7 +54,7 @@ IntelliJ-Plugin (`reviewtool-intellij`). Legende:
 
 | Eclipse | Vorher in IntelliJ | Jetzt |
 |---|---|---|
-| Spalten „Prev. reviewers“, „Prev. state“, „Open for“ | Key, Summary, State, Component | 🟡 „Open (days)“ ergänzt, Tabelle sortierbar; Vorgänger-Reviewer/-Status bräuchten pro Ticket eine Activity-Abfrage |
+| Spalten „Prev. reviewers“, „Prev. state“, „Open for“ | Key, Summary, State, Component | ✅ Alle Spalten: „Prev. State“ und „Prev. Reviewers“ werden nach dem Laden der Liste im Hintergrund aus der YouTrack-Activity jedes Tickets ermittelt (Fortschrittsanzeige, die Liste bleibt sofort bedienbar); „Open (days)“ zählt ab dem letzten Statuswechsel. Tabelle sortierbar |
 | Zuletzt genutzter Filter wird gemerkt | – | ✅ Modus wird gemerkt, Wechsel lädt die Tickets neu |
 | Ticket-ID direkt eingeben | – | ✅ „Open Ticket by ID…“ (auch für Tickets, die nicht im aktuellen Filter sind) |
 
@@ -79,7 +79,8 @@ sind auch Strg+Alt+4/5/6 schon vergeben – deshalb dort die Variante mit Umscha
 | Relation-Matcher-Einstellungen für die Stop-Reihenfolge | ✅ Tabelle in den Einstellungen: Relationen aktivieren, Priorität per Hoch/Runter, Verschachtelung im Tour-Baum |
 | Telemetrie, Umfrage am Review-Ende, End-Review-Extensions, „preferred transition“-Strategien | ❌ |
 | SVN als Change-Source | ❌ nur Git |
-| Summary: Refactoring-Erkennung, Delta-Doc | ❌ (siehe README) |
+| Summary: Refactoring-Erkennung (RefDiff) | ✅ Eigener, leichtgewichtiger Detektor auf Basis von JavaParser (`RefactoringDetector`, ohne JDT/RefDiff): umbenannte/verschobene Klassen, umbenannte/verschobene Methoden, geänderte Signaturen, extrahierte und inlinte Methoden – als Abschnitt „Detected refactorings“ im Summary-Tab |
+| Summary: Delta-Doc | ❌ |
 
 ## Weitere Usability-Verbesserungen (ohne direktes Eclipse-Pendant)
 

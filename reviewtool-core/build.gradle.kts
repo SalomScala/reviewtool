@@ -49,6 +49,7 @@ sourceSets {
                     "../de.setsoftware.reviewtool.core.model.tests/src",
                     "../de.setsoftware.reviewtool.ordering.tests/src",
                     "../de.setsoftware.reviewtool.changesources.git.tests/src",
+                    "../de.setsoftware.reviewtool.ticketconnectors.youtrack.tests/src",
                 ),
             )
         }
