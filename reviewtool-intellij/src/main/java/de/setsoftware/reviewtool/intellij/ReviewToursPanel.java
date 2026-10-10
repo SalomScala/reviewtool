@@ -601,7 +601,7 @@ public final class ReviewToursPanel extends JPanel {
         return null;
     }
 
-    private void toggleChecked(Stop stop) {
+    void toggleChecked(Stop stop) {
         if (stop == null) {
             return;
         }
@@ -812,18 +812,12 @@ public final class ReviewToursPanel extends JPanel {
         }
     }
 
-    private Icon stopIcon(Stop stop) {
-        if (this.isChecked(stop)) {
-            return AllIcons.Actions.Checked;
-        }
-        final ViewStatDataForStop ratio = this.statistics.determineViewRatio(stop, LONG_ENOUGH_VIEW_COUNT);
-        if (ratio.isNotViewedAtAll()) {
-            return this.isIrrelevant(stop) ? AllIcons.General.InspectionsTrafficOff : AllIcons.Nodes.EmptyNode;
-        } else if (ratio.isPartlyUnvisited()) {
-            return AllIcons.General.InspectionsPause;
-        } else {
-            return AllIcons.General.InspectionsOK;
-        }
+    /**
+     * The icon factory for the current tours (graphical shapes colored by the view state, like in Eclipse).
+     */
+    StopIcons icons() {
+        return new StopIcons(this.statistics, LONG_ENOUGH_VIEW_COUNT,
+                this.tours == null ? Collections.emptySet() : this.tours.getIrrelevantCategories());
     }
 
     /**
@@ -844,7 +838,7 @@ public final class ReviewToursPanel extends JPanel {
             if (userObject instanceof TourNode) {
                 final Tour tour = ((TourNode) userObject).tour;
                 final boolean active = t != null && tour.equals(t.getActiveTour());
-                this.setIcon(active ? AllIcons.Actions.Execute : AllIcons.Nodes.Folder);
+                this.setIcon(ReviewToursPanel.this.icons().forTour(tour, active));
                 this.append(firstLine(tour.getDescription()),
                         active ? ACTIVE_TOUR_ATTRIBUTES : SimpleTextAttributes.REGULAR_ATTRIBUTES);
                 this.append("  " + tour.getStops().size() + " stops"
@@ -854,7 +848,7 @@ public final class ReviewToursPanel extends JPanel {
                 final Stop stop = ((StopNode) userObject).stop;
                 final boolean irrelevant = ReviewToursPanel.this.isIrrelevant(stop);
                 final boolean current = stop == ReviewToursPanel.this.currentStop;
-                this.setIcon(ReviewToursPanel.this.stopIcon(stop));
+                this.setIcon(ReviewToursPanel.this.icons().forStop(stop));
                 SimpleTextAttributes main = irrelevant
                         ? SimpleTextAttributes.GRAYED_ATTRIBUTES : SimpleTextAttributes.REGULAR_ATTRIBUTES;
                 if (current) {

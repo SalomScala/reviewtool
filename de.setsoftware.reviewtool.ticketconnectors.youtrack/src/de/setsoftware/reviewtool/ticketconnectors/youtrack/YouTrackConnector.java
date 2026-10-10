@@ -401,17 +401,65 @@ public class YouTrackConnector implements ITicketConnector {
         return this.performGet(getUrl).asArray();
     }
 
-    private boolean isTransitionToReview(JsonValue activity) {
-        final JsonObject a = activity.asObject();
-        final JsonValue field = a.get("field");
+    /**
+     * Adds the information that has to be determined from the ticket's history (which needs an extra
+     * request per ticket) to the given ticket info: the reviewers of the previous review rounds, the
+     * state before the current one and the time of the last state change (the time the ticket is
+     * waiting in its current state).
+     */
+    public TicketInfo addHistory(TicketInfo ticket) {
+        final Set<String> reviewers = new LinkedHashSet<>();
+        String previousState = "";
+        Date lastStateChange = null;
+        for (final JsonValue activity : this.loadStateActivities(ticket.getId())) {
+            if (!this.isStateChange(activity)) {
+                continue;
+            }
+            if (this.isTransitionToReview(activity)) {
+                final String reviewer = this.getAuthor(activity);
+                if (!reviewer.isEmpty()) {
+                    reviewers.add(reviewer.toUpperCase());
+                }
+            }
+            final String removed = this.firstName(activity.asObject().get("removed"));
+            if (!removed.isEmpty()) {
+                previousState = removed;
+            }
+            final JsonValue timestamp = activity.asObject().get("timestamp");
+            if (timestamp != null && timestamp.isNumber()) {
+                lastStateChange = new Date(timestamp.asLong());
+            }
+        }
+        return ticket.withHistory(previousState, reviewers,
+                lastStateChange == null ? ticket.getWaitingSince() : lastStateChange);
+    }
+
+    private String firstName(JsonValue values) {
+        if (values == null || !values.isArray() || values.asArray().isEmpty()) {
+            return "";
+        }
+        final JsonValue first = values.asArray().get(0);
+        if (!first.isObject()) {
+            return "";
+        }
+        return this.asStringOrEmpty(first.asObject().get("name"));
+    }
+
+    private boolean isStateChange(JsonValue activity) {
+        final JsonValue field = activity.asObject().get("field");
         if (field == null || field.isNull() || !field.isObject()) {
             return false;
         }
         final JsonValue presentation = field.asObject().get("presentation");
-        if (presentation == null || presentation.isNull()
-                || !presentation.asString().equals(this.stateFieldName)) {
+        return presentation != null && !presentation.isNull()
+                && presentation.asString().equals(this.stateFieldName);
+    }
+
+    private boolean isTransitionToReview(JsonValue activity) {
+        if (!this.isStateChange(activity)) {
             return false;
         }
+        final JsonObject a = activity.asObject();
         final JsonValue added = a.get("added");
         if (added == null || !added.isArray()) {
             return false;

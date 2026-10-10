@@ -70,6 +70,15 @@ public class TicketInfo {
         return this.waitingSince;
     }
 
+    /**
+     * Returns a copy of this ticket info with the given information from the ticket's history (which
+     * is often more expensive to determine than the basic information).
+     */
+    public TicketInfo withHistory(String previousState, Set<String> reviewers, Date waitingSince) {
+        return new TicketInfo(this.key, this.description, this.state, previousState, this.component,
+                this.parentSummary, reviewers, waitingSince);
+    }
+
     public int getWaitingForDays(Date date) {
         return (int) Math.round(((double) (date.getTime() - this.waitingSince.getTime())) / MS_PER_DAY);
     }

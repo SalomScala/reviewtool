@@ -154,6 +154,22 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
         assertEquals(6, model.getAllRemarks().size());
     }
 
+    public void testTicketTableShowsHistoryWhenLoaded() {
+        final TicketTableModel model = new TicketTableModel();
+        final de.setsoftware.reviewtool.model.TicketInfo ticket = new de.setsoftware.reviewtool.model.TicketInfo(
+                "TIC-1", "summary", "Ready for Review", "", "Core", null,
+                java.util.Collections.<String>emptySet(), new java.util.Date());
+        model.setTickets(java.util.Collections.singletonList(ticket));
+        assertEquals("", model.getValueAt(0, TicketTableModel.COLUMN_PREVIOUS_REVIEWERS));
+
+        model.updateTicket(ticket.withHistory("Reopened",
+                new java.util.LinkedHashSet<>(java.util.Arrays.asList("ALICE", "BOB")),
+                new java.util.Date(System.currentTimeMillis() - 3L * 24 * 60 * 60 * 1000)));
+        assertEquals("Reopened", model.getValueAt(0, TicketTableModel.COLUMN_PREVIOUS_STATE));
+        assertEquals("ALICE, BOB", model.getValueAt(0, TicketTableModel.COLUMN_PREVIOUS_REVIEWERS));
+        assertEquals(3, model.getValueAt(0, TicketTableModel.COLUMN_OPEN_DAYS));
+    }
+
     public void testStopOrderingSettings() {
         // empty = the Eclipse defaults: all relation types active
         assertEquals(StopOrderingSettings.RelationType.values().length,
@@ -237,6 +253,23 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
             final TreeModel tree = UIUtil.findComponentOfType(panel, Tree.class).getModel();
             assertEquals(tours.getTopmostTours().size(), tree.getChildCount(tree.getRoot()));
 
+            // graphical stop icons like in Eclipse: unvisited stops in the text color, checked ones with a check mark
+            final StopIcons icons = panel.icons();
+            for (final Tour tour : tours.getTopmostTours()) {
+                assertPaintsSomething(icons.forTour(tour, false));
+                assertSame(StopIcons.activeTourDot(), icons.forTour(tour, true));
+                for (final Stop stop : tour.getStops()) {
+                    final javax.swing.Icon icon = icons.forStop(stop);
+                    assertEquals(com.intellij.util.ui.JBUI.scale(16), icon.getIconWidth());
+                    assertPaintsSomething(icon);
+                    assertEquals(StopIcons.shape(stop), StopIcons.shape(stop));
+                }
+            }
+            final Stop firstStop = tours.getTopmostTours().get(0).getStops().get(0);
+            panel.toggleChecked(firstStop);
+            assertSame(StopIcons.checkMark(), panel.icons().forStop(firstStop));
+            panel.toggleChecked(firstStop);
+
             panel.navigate(1);
             assertNotNull("navigating to the first stop opens its file",
                     FileEditorManager.getInstance(this.getProject()).getSelectedTextEditor());
@@ -248,6 +281,19 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
             details.showStop(shown, "updated description again");
             com.intellij.testFramework.PlatformTestUtil.waitWithEventsDispatching(
                     "the diff of the stop was not loaded", () -> details.getLoadedStop() == shown, 20);
+            // by default, the diff only shows the stop's changes, not the whole file
+            assertTrue(details.isShowingOnlyStopChanges());
+            details.setOnlyStopChanges(false);
+            assertFalse(details.isShowingOnlyStopChanges());
+            details.setOnlyStopChanges(true);
+            final File calculatorFile = new File(repo, "src/main/java/demo/Calculator.java");
+            for (final Stop stop : tours.getStopsFor(calculatorFile.getAbsoluteFile())) {
+                final StopDiffExcerpt excerpt = StopDiffViewer.load(stop).getExcerpt();
+                assertNotNull(excerpt);
+                final boolean importStop = stop.getMostRecentFragment().getFrom().getLine() < 5;
+                assertEquals(excerpt.getNewText(), importStop, excerpt.getNewText().contains("import java.util.List"));
+                assertEquals(excerpt.getNewText(), !importStop, excerpt.getNewText().contains("multiply"));
+            }
             panel.jumpToNextUnvisitedStop();
             panel.showNearestStop(new File(repo, "src/main/java/demo/Calculator.java"), 18);
 
@@ -272,6 +318,89 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
                 editorManager.closeFile(file);
             }
         }
+    }
+
+    public void testIconGrammarCreatesDifferentShapes() {
+        final Set<String> shapes = new LinkedHashSet<>();
+        for (int i = 0; i < 12; i++) {
+            shapes.add(StopIconGrammar.create(i, i, i + 1).toString());
+        }
+        assertEquals(12, shapes.size());
+        assertEquals(StopIconGrammar.create(3, 5, 7), StopIconGrammar.create(15, 17, 19));
+        assertEquals(StopIconGrammar.create(1, 1, 1), StopIconGrammar.create(-1, -1, -1));
+    }
+
+    private static void assertPaintsSomething(javax.swing.Icon icon) {
+        final BufferedImage image = new BufferedImage(icon.getIconWidth(), icon.getIconHeight(),
+                BufferedImage.TYPE_INT_ARGB);
+        final Graphics2D g = image.createGraphics();
+        try {
+            icon.paintIcon(null, g, 0, 0);
+        } finally {
+            g.dispose();
+        }
+        for (int x = 0; x < image.getWidth(); x++) {
+            for (int y = 0; y < image.getHeight(); y++) {
+                if ((image.getRGB(x, y) >>> 24) != 0) {
+                    return;
+                }
+            }
+        }
+        fail("the icon is empty: " + icon);
+    }
+
+    public void testSummaryDetectsRefactorings() throws Exception {
+        final File repo = this.createDemoRepository();
+        try (Git git = Git.open(repo)) {
+            final File calculator = new File(repo, "src/main/java/demo/Calculator.java");
+            final String content = new String(Files.readAllBytes(calculator.toPath()), StandardCharsets.UTF_8);
+            Files.delete(calculator.toPath());
+            write(new File(repo, "src/main/java/demo/Computer.java"), content
+                    .replace("class Calculator", "class Computer")
+                    .replace("multiply(", "times(")
+                    .replace("        int total = 0;\n"
+                            + "        for (final int v : values) {\n            total = this.add(total, v);\n"
+                            + "        }\n        return total;\n",
+                            "        return this.addAll(values);\n    }\n\n"
+                            + "    private int addAll(List<Integer> values) {\n        int total = 0;\n"
+                            + "        for (final int v : values) {\n            total = this.add(total, v);\n"
+                            + "        }\n        return total;\n"));
+            write(new File(repo, "src/main/java/demo/Main.java"), "package demo;\n\npublic class Main {\n"
+                    + "    public static void main(String[] args) {\n"
+                    + "        System.out.println(new Computer().times(3, 4));\n    }\n}\n");
+            git.add().addFilepattern(".").call();
+            git.rm().addFilepattern("src/main/java/demo/Calculator.java").call();
+            git.commit().setMessage("DEMO-3 Refactoring").setSign(false)
+                    .setAuthor("Demo", "demo@example.com").setCommitter("Demo", "demo@example.com").call();
+        }
+        final ReviewToolService service = ReviewToolService.getInstance(this.getProject());
+        service.getChangeSource().addProject(repo);
+        final ChangeSourceUiAdapter ui = new ChangeSourceUiAdapter(this.getProject(), new EmptyProgressIndicator());
+        final Set<String> ids = new LinkedHashSet<>();
+        for (final GitCommitInfo commit : service.getRecentCommits(10, ui)) {
+            if (commit.getSummary().startsWith("DEMO-3")) {
+                ids.add(commit.getId());
+            }
+        }
+        final ToursInReview tours = service.createTours(
+                service.getChangesForCommits(ids, ui), ui, new AcceptAllCreateToursUi());
+        final ChangeSummaryGenerator.SummaryResult summary = ChangeSummaryGenerator.analyze(tours);
+        final List<String> refactorings = new ArrayList<>();
+        for (final RefactoringDetector.Refactoring r : summary.getRefactorings()) {
+            refactorings.add(r.toString());
+        }
+        assertTrue(refactorings.toString(), refactorings.contains("Rename class: demo.Calculator -> demo.Computer"));
+        assertTrue(refactorings.toString(),
+                refactorings.contains("Rename method: Calculator.multiply(int, int) -> Computer.times(int, int)"));
+        assertTrue(refactorings.toString(),
+                refactorings.contains("Extract method: Calculator.sum(List<Integer>) -> Computer.addAll(List<Integer>)"));
+
+        final ReviewSummaryPanel panel = new ReviewSummaryPanel(this.getProject());
+        panel.setTours(tours);
+        com.intellij.testFramework.PlatformTestUtil.waitWithEventsDispatching("the summary was not shown",
+                () -> String.valueOf(UIUtil.findComponentOfType(panel, javax.swing.JTree.class).getModel().getRoot())
+                        .startsWith("Review summary"), 20);
+        renderToPng(panel, "summary", 900, 400);
     }
 
     private static List<Integer> stopStartLines(ToursInReview tours, File file) {

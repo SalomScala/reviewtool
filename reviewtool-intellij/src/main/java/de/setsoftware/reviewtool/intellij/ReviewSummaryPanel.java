@@ -21,8 +21,9 @@ import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
 
 /**
  * Shows a structured summary of the changes under review (see {@link ChangeSummaryGenerator}) as a
- * collapsible tree: an overview node, then one node per changed file (with line counts), and below
- * each file the changed types/methods. The tree's expand/collapse provides the folding that the
+ * collapsible tree: an overview node, the detected refactorings (renamed/moved classes and methods,
+ * extracted methods, ...), then one node per changed file (with line counts), and below each file the
+ * changed types/methods. The tree's expand/collapse provides the folding that the
  * Eclipse summary view offers via hyperlinks.
  */
 public final class ReviewSummaryPanel extends JPanel {
@@ -82,6 +83,15 @@ public final class ReviewSummaryPanel extends JPanel {
                     result.getTourCount(), result.getStopCount(), result.getRelevantCount(),
                     result.getIrrelevantCount(), result.getFiles().size(),
                     result.getTotalAdded(), result.getTotalRemoved()));
+            if (!result.getRefactorings().isEmpty()) {
+                final DefaultMutableTreeNode refactorings = new DefaultMutableTreeNode(
+                        "Detected refactorings (" + result.getRefactorings().size() + ")");
+                for (final RefactoringDetector.Refactoring r : result.getRefactorings()) {
+                    refactorings.add(new DefaultMutableTreeNode(
+                            r.getType() + ": " + r.getBefore() + " \u2192 " + r.getAfter()));
+                }
+                this.treeRoot.add(refactorings);
+            }
             for (final FileItem file : result.getFiles()) {
                 final String header = file.isBinary()
                         ? file.getPath() + "  (binary)"

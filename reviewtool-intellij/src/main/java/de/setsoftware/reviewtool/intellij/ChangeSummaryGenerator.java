@@ -2,6 +2,7 @@ package de.setsoftware.reviewtool.intellij;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -14,6 +15,7 @@ import com.github.javaparser.ast.body.TypeDeclaration;
 
 import de.setsoftware.reviewtool.base.Logger;
 import de.setsoftware.reviewtool.model.api.IFragment;
+import de.setsoftware.reviewtool.model.api.IRevisionedFile;
 import de.setsoftware.reviewtool.model.changestructure.Stop;
 import de.setsoftware.reviewtool.model.changestructure.Tour;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
@@ -23,8 +25,10 @@ import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
  * platform-independent counterpart of the Eclipse review content summary view: it groups the
  * changes by file, computes the added/removed line counts and (for Java files) determines the
  * changed types and methods by mapping the changed line ranges onto the declarations found by
- * {@link JavaParser}. The heavier refactoring-detection and delta-doc techniques of the Eclipse
- * summary (which rely on Eclipse JDT and external libraries) are not reproduced here.
+ * {@link JavaParser}. Additionally, refactorings (renamed/moved classes and methods, changed
+ * signatures, extracted/inlined methods) are detected with the {@link RefactoringDetector}, the
+ * counterpart of the RefDiff technique of the Eclipse summary. The delta-doc technique of the Eclipse
+ * summary is not reproduced here.
  */
 public final class ChangeSummaryGenerator {
 
@@ -80,15 +84,18 @@ public final class ChangeSummaryGenerator {
         private final int totalAdded;
         private final int totalRemoved;
         private final List<FileItem> files;
+        private final List<RefactoringDetector.Refactoring> refactorings;
 
         SummaryResult(int tourCount, int stopCount, int irrelevantCount,
-                int totalAdded, int totalRemoved, List<FileItem> files) {
+                int totalAdded, int totalRemoved, List<FileItem> files,
+                List<RefactoringDetector.Refactoring> refactorings) {
             this.tourCount = tourCount;
             this.stopCount = stopCount;
             this.irrelevantCount = irrelevantCount;
             this.totalAdded = totalAdded;
             this.totalRemoved = totalRemoved;
             this.files = files;
+            this.refactorings = refactorings;
         }
 
         public int getTourCount() {
@@ -118,6 +125,13 @@ public final class ChangeSummaryGenerator {
         public List<FileItem> getFiles() {
             return this.files;
         }
+
+        /**
+         * The refactorings detected in the changed Java files.
+         */
+        public List<RefactoringDetector.Refactoring> getRefactorings() {
+            return this.refactorings;
+        }
     }
 
     /**
@@ -130,6 +144,8 @@ public final class ChangeSummaryGenerator {
         private boolean java;
         private final List<int[]> changedRanges = new ArrayList<>();
         private byte[] contents;
+        private String path;
+        private IRevisionedFile oldestRevision;
     }
 
     private ChangeSummaryGenerator() {
@@ -144,11 +160,14 @@ public final class ChangeSummaryGenerator {
         }
 
         final TreeMap<File, FileAccumulator> byFile = new TreeMap<>();
+        final TreeMap<File, FileAccumulator> allFiles = new TreeMap<>();
         int stopCount = 0;
         int irrelevantCount = 0;
         for (final Tour tour : tours.getTopmostTours()) {
             for (final Stop stop : tour.getStops()) {
                 stopCount++;
+                // refactorings are also detected in irrelevant stops (e.g. a moved class in an "ignore" category)
+                collectStop(allFiles, stop);
                 if (stop.isIrrelevantForReview(tours.getIrrelevantCategories())) {
                     irrelevantCount++;
                     continue;
@@ -170,7 +189,41 @@ public final class ChangeSummaryGenerator {
             files.add(new FileItem(e.getKey().getPath(), fs.added, fs.removed, fs.binary, parts));
         }
         return new SummaryResult(
-                tours.getTopmostTours().size(), stopCount, irrelevantCount, totalAdded, totalRemoved, files);
+                tours.getTopmostTours().size(), stopCount, irrelevantCount, totalAdded, totalRemoved, files,
+                detectRefactorings(allFiles));
+    }
+
+    private static List<RefactoringDetector.Refactoring> detectRefactorings(Map<File, FileAccumulator> files) {
+        final List<RefactoringDetector.FileVersions> versions = new ArrayList<>();
+        for (final FileAccumulator fs : files.values()) {
+            if (fs.java && !fs.binary) {
+                versions.add(new RefactoringDetector.FileVersions(
+                        fs.path, readContents(fs.oldestRevision), toText(fs.contents)));
+            }
+        }
+        try {
+            return RefactoringDetector.detect(versions);
+        } catch (final RuntimeException e) {
+            //the refactoring detection is optional and should not break the whole summary
+            Logger.warn("could not detect refactorings", e);
+            return new ArrayList<>();
+        }
+    }
+
+    private static String readContents(IRevisionedFile file) {
+        if (file == null) {
+            return "";
+        }
+        try {
+            return toText(file.getContents());
+        } catch (final Exception e) {
+            //e.g. a file that did not exist before
+            return "";
+        }
+    }
+
+    private static String toText(byte[] contents) {
+        return contents == null ? "" : new String(contents, StandardCharsets.UTF_8);
     }
 
     private static void collectStop(TreeMap<File, FileAccumulator> byFile, Stop stop) {
@@ -180,6 +233,8 @@ public final class ChangeSummaryGenerator {
             fs = new FileAccumulator();
             fs.binary = stop.isBinaryChange();
             fs.java = file.getName().endsWith(".java");
+            fs.path = stop.getMostRecentFile().getPath();
+            fs.oldestRevision = stop.getHistory().isEmpty() ? null : stop.getHistory().keySet().iterator().next();
             if (fs.java) {
                 try {
                     fs.contents = stop.getMostRecentFile().getContents();

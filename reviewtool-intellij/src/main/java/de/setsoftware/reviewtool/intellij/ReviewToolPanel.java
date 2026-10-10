@@ -27,7 +27,6 @@ import javax.swing.JTree;
 import javax.swing.ListSelectionModel;
 import javax.swing.Timer;
 import javax.swing.event.DocumentEvent;
-import javax.swing.table.AbstractTableModel;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
 
@@ -104,74 +103,6 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     private static final String NO_TICKET_KEY = "Selected commits";
 
     /**
-     * Table model for the loaded tickets.
-     */
-    private static final class TicketTableModel extends AbstractTableModel {
-
-        private static final long serialVersionUID = 1378391971397208329L;
-
-        private static final String[] COLUMNS = {"Key", "Summary", "State", "Component", "Open (days)"};
-
-        private List<TicketInfo> tickets = new ArrayList<>();
-
-        public void setTickets(List<TicketInfo> tickets) {
-            this.tickets = tickets;
-            this.fireTableDataChanged();
-        }
-
-        public TicketInfo getTicket(int row) {
-            return this.tickets.get(row);
-        }
-
-        public int indexOf(String key) {
-            for (int i = 0; i < this.tickets.size(); i++) {
-                if (this.tickets.get(i).getId().equals(key)) {
-                    return i;
-                }
-            }
-            return -1;
-        }
-
-        @Override
-        public int getRowCount() {
-            return this.tickets.size();
-        }
-
-        @Override
-        public int getColumnCount() {
-            return COLUMNS.length;
-        }
-
-        @Override
-        public String getColumnName(int column) {
-            return COLUMNS[column];
-        }
-
-        @Override
-        public Class<?> getColumnClass(int columnIndex) {
-            return columnIndex == 4 ? Integer.class : String.class;
-        }
-
-        @Override
-        public Object getValueAt(int rowIndex, int columnIndex) {
-            final TicketInfo t = this.tickets.get(rowIndex);
-            switch (columnIndex) {
-            case 0:
-                return t.getId();
-            case 1:
-                return t.getSummaryIncludingParent();
-            case 2:
-                return t.getState();
-            case 3:
-                return t.getComponent();
-            default:
-                return t.getWaitingForDays(new Date());
-            }
-        }
-
-    }
-
-    /**
      * User object for file nodes in the commit tree.
      */
     private static final class FileNode {
@@ -206,6 +137,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     private final ReviewRemarksModel remarksModel;
     private final ReviewRemarksPanel remarksPanel;
     private final AtomicInteger detailsRequest = new AtomicInteger();
+    private final AtomicInteger ticketListGeneration = new AtomicInteger();
     private final Timer reparseTimer;
 
     private volatile IChangeData lastLoadedChanges;
@@ -258,9 +190,11 @@ public class ReviewToolPanel extends JPanel implements Disposable {
 
         this.ticketTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         this.ticketTable.setAutoCreateRowSorter(true);
-        this.ticketTable.getColumnModel().getColumn(0).setPreferredWidth(JBUI.scale(80));
-        this.ticketTable.getColumnModel().getColumn(1).setPreferredWidth(JBUI.scale(300));
-        this.ticketTable.getColumnModel().getColumn(4).setPreferredWidth(JBUI.scale(60));
+        this.ticketTable.getColumnModel().getColumn(TicketTableModel.COLUMN_KEY).setPreferredWidth(JBUI.scale(80));
+        this.ticketTable.getColumnModel().getColumn(TicketTableModel.COLUMN_SUMMARY).setPreferredWidth(JBUI.scale(300));
+        this.ticketTable.getColumnModel().getColumn(TicketTableModel.COLUMN_OPEN_DAYS).setPreferredWidth(JBUI.scale(60));
+        this.ticketTable.getColumnModel().getColumn(TicketTableModel.COLUMN_PREVIOUS_REVIEWERS)
+                .setPreferredWidth(JBUI.scale(110));
         this.ticketTable.getSelectionModel().addListSelectionListener((e) -> {
             if (!e.getValueIsAdjusting() && !this.changingSelection) {
                 this.ticketSelectionChanged();
@@ -548,14 +482,55 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                     final YouTrackConnector connector =
                             ReviewToolPanel.this.getService().createTicketConnector();
                     final List<TicketInfo> tickets = connector.getTicketsForFilter(filterName);
+                    final int generation = ReviewToolPanel.this.ticketListGeneration.incrementAndGet();
                     ApplicationManager.getApplication().invokeLater(() -> {
                         final String selected = ReviewToolPanel.this.currentTicketKey;
                         ReviewToolPanel.this.ticketModel.setTickets(tickets);
                         // keep the ticket whose details are shown selected, if it is still listed
                         ReviewToolPanel.this.selectTicketSilently(selected);
+                        ReviewToolPanel.this.loadTicketHistories(connector, tickets, generation);
                     });
                 } catch (final RuntimeException e) {
                     ReviewToolPanel.this.showError("Could not load tickets from YouTrack", e);
+                }
+            }
+        }.queue();
+    }
+
+    /**
+     * Determines the previous reviewers, the previous state and the time since the last state change
+     * of the listed tickets (like the Eclipse ticket selection dialog). This needs a request per
+     * ticket, so it is done in the background after the list is shown, and the rows are updated as
+     * the results arrive. The results are discarded when the list has been reloaded in the meantime.
+     */
+    private void loadTicketHistories(YouTrackConnector connector, List<TicketInfo> tickets, int generation) {
+        if (tickets.isEmpty()) {
+            return;
+        }
+        new Task.Backgroundable(this.project, "Loading the review history of the tickets", true) {
+            @Override
+            public void run(ProgressIndicator indicator) {
+                indicator.setIndeterminate(false);
+                for (int i = 0; i < tickets.size(); i++) {
+                    if (indicator.isCanceled()
+                            || generation != ReviewToolPanel.this.ticketListGeneration.get()) {
+                        return;
+                    }
+                    indicator.setFraction((double) i / tickets.size());
+                    indicator.setText2(tickets.get(i).getId());
+                    final TicketInfo withHistory;
+                    try {
+                        withHistory = connector.addHistory(tickets.get(i));
+                    } catch (final RuntimeException e) {
+                        // the history is additional information, the list is usable without it
+                        Logger.warn("could not load the history of " + tickets.get(i).getId(), e);
+                        continue;
+                    }
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        if (generation == ReviewToolPanel.this.ticketListGeneration.get()) {
+                            ReviewToolPanel.this.ticketModel.updateTicket(withHistory);
+                        }
+                    });
                 }
             }
         }.queue();
