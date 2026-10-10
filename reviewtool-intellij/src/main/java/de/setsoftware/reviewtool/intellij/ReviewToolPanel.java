@@ -54,6 +54,7 @@ import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.ColoredTreeCellRenderer;
 import com.intellij.ui.DocumentAdapter;
+import com.intellij.ui.JBSplitter;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.SimpleTextAttributes;
 import com.intellij.ui.components.JBLabel;
@@ -306,7 +307,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         group.add(PanelActions.withTextInToolbar(PanelActions.action(
                 () -> this.isFixingMode() ? "Start Fixing" : "Start Review",
                 AllIcons.Actions.Execute,
-                () -> this.getSelectedTicketKey() != null,
+                () -> this.getActiveTicketKey() != null,
                 this::startWorkOnSelectedTicket)));
         group.add(PanelActions.withTextInToolbar(PanelActions.action(
                 () -> this.isFixingMode() ? "End Fixing..." : "End Review...",
@@ -319,9 +320,10 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                 this::hasTicket, this::reloadCurrentTicket));
         group.addSeparator();
         group.add(PanelActions.action("Open Ticket in YouTrack", AllIcons.General.Web,
-                () -> this.getSelectedTicketKey() != null, this::openSelectedTicketInBrowser));
+                () -> this.getActiveTicketKey() != null, this::openSelectedTicketInBrowser));
         group.add(PanelActions.action("Copy Ticket ID", AllIcons.Actions.Copy,
-                () -> this.getSelectedTicketKey() != null, this::copySelectedTicketId));
+                () -> this.getActiveTicketKey() != null, this::copySelectedTicketId));
+        group.add(PanelActions.action("Open Ticket by ID...", AllIcons.Actions.Find, () -> true, this::openTicketById));
         group.addSeparator();
         group.add(PanelActions.action("Review Commits without Ticket...", AllIcons.Vcs.History, () -> true,
                 this::reviewSelectedCommits));
@@ -334,6 +336,15 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                 this::showRemarkMarkers));
         group.add(PanelActions.action("Clear Markers", AllIcons.Actions.GC, () -> true, this::clearAllMarkers));
         group.addSeparator();
+        final DefaultActionGroup more = new DefaultActionGroup("More", true);
+        more.getTemplatePresentation().setIcon(AllIcons.Actions.More);
+        more.add(PanelActions.action("Clear Commit Cache", AllIcons.Actions.GC, () -> true, this::clearCommitCache));
+        more.add(PanelActions.action("Enable Verbose Logging", AllIcons.Actions.StartDebugger, () -> true, () -> {
+            IntellijLogger.enableVerboseLogging();
+            IntellijNotifications.info(this.project,
+                    "Verbose logging of CoRT is enabled until the IDE is restarted (see Help | Show Log).");
+        }));
+        group.add(more);
         group.add(PanelActions.action("Settings", AllIcons.General.Settings, () -> true,
                 () -> ShowSettingsUtil.getInstance().showSettingsDialog(this.project, ReviewToolConfigurable.class)));
         return group;
@@ -362,8 +373,10 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         textPanel.add(new JBScrollPane(this.remarksArea), BorderLayout.CENTER);
         textPanel.add(this.unsavedLabel, BorderLayout.SOUTH);
 
-        final JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, this.remarksPanel, textPanel);
-        split.setResizeWeight(0.65);
+        // side by side, because the tool window is usually wide and flat at the bottom of the IDE
+        final JBSplitter split = new JBSplitter(false, "de.setsoftware.reviewtool.remarksSplitter", 0.6f);
+        split.setFirstComponent(this.remarksPanel);
+        split.setSecondComponent(textPanel);
         final JPanel panel = new JPanel(new BorderLayout());
         panel.add(split, BorderLayout.CENTER);
         return panel;
@@ -415,6 +428,66 @@ public class ReviewToolPanel extends JPanel implements Disposable {
             return null;
         }
         return this.ticketModel.getTicket(this.ticketTable.convertRowIndexToModel(viewRow)).getId();
+    }
+
+    /**
+     * The ticket the ticket actions (start, open, copy) refer to: the selected ticket, or the ticket
+     * whose details are shown (e.g. one opened by its ID that is not in the list).
+     */
+    private String getActiveTicketKey() {
+        final String selected = this.getSelectedTicketKey();
+        if (selected != null) {
+            return selected;
+        }
+        return this.hasTicket() ? this.currentTicketKey : null;
+    }
+
+    /**
+     * Asks for a ticket ID and shows the ticket, also if it is not contained in the list of the
+     * current filter (the counterpart of entering an ID in the Eclipse ticket selection dialog).
+     */
+    private void openTicketById() {
+        final String input = Messages.showInputDialog(this.project,
+                "Ticket ID (e.g. PROJ-123):", "Open Ticket by ID", null, null,
+                new com.intellij.openapi.ui.InputValidator() {
+                    @Override
+                    public boolean checkInput(String inputString) {
+                        return !inputString.trim().isEmpty() && !inputString.trim().contains(" ");
+                    }
+
+                    @Override
+                    public boolean canClose(String inputString) {
+                        return this.checkInput(inputString);
+                    }
+                });
+        if (input == null) {
+            return;
+        }
+        final String key = input.trim();
+        if (key.equals(this.currentTicketKey)) {
+            this.reloadCurrentTicket();
+            return;
+        }
+        if (!this.confirmDiscardUnsavedRemarks()) {
+            return;
+        }
+        this.selectTicketSilently(key);
+        this.loadDetails(key, null);
+    }
+
+    private void clearCommitCache() {
+        new Task.Backgroundable(this.project, "Clearing the CoRT commit cache", false) {
+            @Override
+            public void run(ProgressIndicator indicator) {
+                try {
+                    ReviewToolPanel.this.getService().getChangeSource().clearCaches();
+                    IntellijNotifications.info(ReviewToolPanel.this.project,
+                            "The commit cache has been cleared, the commits are determined anew on the next load.");
+                } catch (final RuntimeException e) {
+                    ReviewToolPanel.this.showError("Could not clear the commit cache", e);
+                }
+            }
+        }.queue();
     }
 
     private void selectTicketSilently(String key) {
@@ -649,7 +722,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     }
 
     private void startWorkOnSelectedTicket() {
-        final String key = this.getSelectedTicketKey();
+        final String key = this.getActiveTicketKey();
         if (key == null) {
             return;
         }
@@ -704,6 +777,13 @@ public class ReviewToolPanel extends JPanel implements Disposable {
             return;
         }
         this.remarksModel.reload();
+        if (this.remarksModel.getParseError() != null) {
+            // like Eclipse, the syntax has to be corrected before the review/fixing can be ended
+            this.rightTabs.setSelectedIndex(TAB_REMARKS);
+            IntellijNotifications.warn(this.project, "The review remarks have a syntax error. Please correct"
+                    + " the remarks text in the \"Remarks\" tab first: " + this.remarksModel.getParseError());
+            return;
+        }
         if (this.isFixingMode()) {
             this.endFixing(this.currentTicketKey);
         } else {
@@ -914,7 +994,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     }
 
     private void openSelectedTicketInBrowser() {
-        final String key = this.getSelectedTicketKey();
+        final String key = this.getActiveTicketKey();
         if (key == null) {
             return;
         }
@@ -926,7 +1006,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     }
 
     private void copySelectedTicketId() {
-        final String key = this.getSelectedTicketKey();
+        final String key = this.getActiveTicketKey();
         if (key == null) {
             return;
         }
@@ -1027,7 +1107,8 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                         ReviewToolPanel.this.remarksModel.reload();
                         ReviewToolPanel.this.rightTabs.setSelectedIndex(TAB_CHANGES);
                         IntellijNotifications.info(ReviewToolPanel.this.project, "Loaded the changes of "
-                                + revisionIds.size() + " commit(s). Use \"Create Tours\" to build the review tours.");
+                                + revisionIds.size() + " commit(s).", "Create review tours",
+                                ReviewToolPanel.this::createToursForLoadedChanges);
                     });
                 } catch (final ProcessCanceledException e) {
                     throw e;
@@ -1105,6 +1186,14 @@ public class ReviewToolPanel extends JPanel implements Disposable {
      * @param prefillText The text the remark is prefilled with (e.g. the selected text).
      */
     public void addRemarkAt(VirtualFile file, int line, String prefillText) {
+        this.remarksModel.reload();
+        if (this.remarksModel.getParseError() != null) {
+            this.rightTabs.setSelectedIndex(TAB_REMARKS);
+            IntellijNotifications.warn(this.project, "The review remarks have a syntax error, so no remark can be"
+                    + " added. Please correct the remarks text in the \"Remarks\" tab first: "
+                    + this.remarksModel.getParseError());
+            return;
+        }
         final Set<PositionReference> allowed;
         final String location;
         if (file == null) {

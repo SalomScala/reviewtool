@@ -14,6 +14,7 @@ import com.intellij.openapi.project.DumbAwareAction;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 
+import de.setsoftware.reviewtool.base.ReviewtoolException;
 import de.setsoftware.reviewtool.model.remarks.ResolutionType;
 import de.setsoftware.reviewtool.model.remarks.ReviewRemark;
 
@@ -42,30 +43,30 @@ final class RemarkActions {
             Consumer<ReviewRemark> jumpToCode) {
         final DefaultActionGroup group = new DefaultActionGroup();
         if (jumpToCode != null) {
-            group.add(new RemarkAction("Jump to Code", AllIcons.Actions.EditSource, remarkSupplier,
+            group.add(new RemarkAction(project, "Jump to Code", AllIcons.Actions.EditSource, remarkSupplier,
                     (r) -> true, jumpToCode));
             group.addSeparator();
         }
-        group.add(new RemarkAction("Mark as Fixed", AllIcons.Actions.Checked, remarkSupplier,
+        group.add(new RemarkAction(project, "Mark as Fixed", AllIcons.Actions.Checked, remarkSupplier,
                 (r) -> r.getResolution() != ResolutionType.FIXED,
                 (r) -> model.resolve(r, ResolutionType.FIXED, null)));
-        group.add(new RemarkAction("Mark as Fixed with Comment...", null, remarkSupplier,
+        group.add(new RemarkAction(project, "Mark as Fixed with Comment...", null, remarkSupplier,
                 (r) -> r.getResolution() != ResolutionType.FIXED,
                 (r) -> resolveWithComment(project, model, r, ResolutionType.FIXED, "Mark as Fixed")));
-        group.add(new RemarkAction("Mark as Won't Fix...", AllIcons.Actions.Cancel, remarkSupplier,
+        group.add(new RemarkAction(project, "Mark as Won't Fix...", AllIcons.Actions.Cancel, remarkSupplier,
                 (r) -> r.getResolution() != ResolutionType.WONT_FIX,
                 (r) -> resolveWithComment(project, model, r, ResolutionType.WONT_FIX, "Mark as Won't Fix")));
-        group.add(new RemarkAction("Mark as Unclear...", AllIcons.General.QuestionDialog, remarkSupplier,
+        group.add(new RemarkAction(project, "Mark as Unclear...", AllIcons.Actions.Help, remarkSupplier,
                 (r) -> r.getResolution() != ResolutionType.QUESTION,
                 (r) -> resolveWithComment(project, model, r, ResolutionType.QUESTION, "Mark as Unclear")));
-        group.add(new RemarkAction("Reopen", AllIcons.Actions.Rollback, remarkSupplier,
+        group.add(new RemarkAction(project, "Reopen", AllIcons.Actions.Rollback, remarkSupplier,
                 (r) -> r.getResolution() != ResolutionType.OPEN,
                 (r) -> model.resolve(r, ResolutionType.OPEN, null)));
         group.addSeparator();
-        group.add(new RemarkAction("Add Comment...", AllIcons.General.Balloon, remarkSupplier,
+        group.add(new RemarkAction(project, "Add Comment...", AllIcons.General.Balloon, remarkSupplier,
                 (r) -> true,
                 (r) -> addComment(project, model, r)));
-        group.add(new RemarkAction("Delete Remark...", AllIcons.Actions.GC, remarkSupplier,
+        group.add(new RemarkAction(project, "Delete Remark...", AllIcons.Actions.GC, remarkSupplier,
                 (r) -> true,
                 (r) -> delete(project, model, r)));
         return group;
@@ -107,13 +108,15 @@ final class RemarkActions {
      * An action on the remark provided by a supplier.
      */
     private static final class RemarkAction extends DumbAwareAction {
+        private final Project project;
         private final Supplier<ReviewRemark> remarkSupplier;
         private final Predicate<ReviewRemark> applicable;
         private final Consumer<ReviewRemark> action;
 
-        RemarkAction(String text, Icon icon, Supplier<ReviewRemark> remarkSupplier,
+        RemarkAction(Project project, String text, Icon icon, Supplier<ReviewRemark> remarkSupplier,
                 Predicate<ReviewRemark> applicable, Consumer<ReviewRemark> action) {
             super(text, null, icon);
+            this.project = project;
             this.remarkSupplier = remarkSupplier;
             this.applicable = applicable;
             this.action = action;
@@ -139,8 +142,13 @@ final class RemarkActions {
         @Override
         public void actionPerformed(AnActionEvent e) {
             final ReviewRemark remark = this.remarkSupplier.get();
-            if (remark != null) {
+            if (remark == null) {
+                return;
+            }
+            try {
                 this.action.accept(remark);
+            } catch (final ReviewtoolException ex) {
+                IntellijNotifications.warn(this.project, ex.getMessage());
             }
         }
     }

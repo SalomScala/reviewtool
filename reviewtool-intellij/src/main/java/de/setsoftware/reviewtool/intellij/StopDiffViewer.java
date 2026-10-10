@@ -7,6 +7,8 @@ import com.intellij.diff.DiffContentFactory;
 import com.intellij.diff.DiffManager;
 import com.intellij.diff.contents.DocumentContent;
 import com.intellij.diff.requests.SimpleDiffRequest;
+import com.intellij.diff.util.DiffUserDataKeys;
+import com.intellij.diff.util.Side;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.fileTypes.FileType;
 import com.intellij.openapi.fileTypes.FileTypeManager;
@@ -14,17 +16,44 @@ import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.util.Pair;
 import com.intellij.openapi.vfs.VirtualFile;
 
 import de.setsoftware.reviewtool.base.Logger;
+import de.setsoftware.reviewtool.model.api.ILocalRevision;
+import de.setsoftware.reviewtool.model.api.IRevision;
 import de.setsoftware.reviewtool.model.api.IRevisionedFile;
+import de.setsoftware.reviewtool.model.api.IUnknownRevision;
 import de.setsoftware.reviewtool.model.changestructure.Stop;
 
 /**
  * Shows the before/after diff of a review tour stop in IntelliJ's diff viewer. This is the IntelliJ
- * counterpart of the Eclipse combined diff stop viewer.
+ * counterpart of the Eclipse combined diff stop viewer. The diff is scrolled to the stop's code.
  */
 final class StopDiffViewer {
+
+    /**
+     * The contents of the two revisions of a stop's file (loaded in the background, because this
+     * can access the repository).
+     */
+    static final class StopDiffData {
+        private final String fileName;
+        private final String oldText;
+        private final String newText;
+        private final String oldTitle;
+        private final String newTitle;
+        private final int line;
+
+        private StopDiffData(String fileName, String oldText, String newText, String oldTitle, String newTitle,
+                int line) {
+            this.fileName = fileName;
+            this.oldText = oldText;
+            this.newText = newText;
+            this.oldTitle = oldTitle;
+            this.newTitle = newTitle;
+            this.line = line;
+        }
+    }
 
     private StopDiffViewer() {
     }
@@ -43,16 +72,9 @@ final class StopDiffViewer {
             @Override
             public void run(ProgressIndicator indicator) {
                 try {
-                    final Map<IRevisionedFile, IRevisionedFile> history = stop.getHistory();
-                    final IRevisionedFile oldFile = history.isEmpty() ? null : history.keySet().iterator().next();
-                    final IRevisionedFile newFile = stop.getMostRecentFile();
-                    final String oldText = oldFile == null ? "" : readContents(oldFile);
-                    final String newText = readContents(newFile);
-                    final String fileName = newFile.getPath();
-                    final String oldTitle = oldFile == null ? "Before" : "Before (" + oldFile.getRevision() + ")";
-                    final String newTitle = "After (" + newFile.getRevision() + ")";
+                    final StopDiffData data = load(stop);
                     ApplicationManager.getApplication().invokeLater(() ->
-                            showDiff(project, stop, fileName, oldText, newText, oldTitle, newTitle));
+                            DiffManager.getInstance().showDiff(project, createRequest(project, stop, data)));
                 } catch (final Exception e) {
                     Logger.warn("could not load diff for stop", e);
                     ApplicationManager.getApplication().invokeLater(() ->
@@ -64,19 +86,46 @@ final class StopDiffViewer {
         }.queue();
     }
 
-    private static void showDiff(
-            Project project, Stop stop, String fileName,
-            String oldText, String newText, String oldTitle, String newTitle) {
+    /**
+     * Loads the contents of the oldest and the most recent revision of the stop's file. Must not be
+     * called on the EDT.
+     */
+    static StopDiffData load(Stop stop) throws Exception {
+        final Map<IRevisionedFile, IRevisionedFile> history = stop.getHistory();
+        final IRevisionedFile oldFile = history.isEmpty() ? null : history.keySet().iterator().next();
+        final IRevisionedFile newFile = stop.getMostRecentFile();
+        final String oldText = oldFile == null ? "" : readContents(oldFile);
+        final String newText = readContents(newFile);
+        final String oldTitle = oldFile == null ? "Before" : "Before (" + describe(oldFile.getRevision()) + ")";
+        final String newTitle = "After (" + describe(newFile.getRevision()) + ")";
+        final int line = stop.isDetailedFragmentKnown() ? stop.getMostRecentFragment().getFrom().getLine() : 1;
+        return new StopDiffData(newFile.getPath(), oldText, newText, oldTitle, newTitle, line);
+    }
+
+    /**
+     * Creates the diff request for the loaded data, scrolled to the stop's code. Must be called on the EDT.
+     */
+    static SimpleDiffRequest createRequest(Project project, Stop stop, StopDiffData data) {
         final VirtualFile vf = IntellijFileResolver.findByAbsoluteFile(stop.getAbsoluteFile());
         final FileType fileType = vf != null
                 ? vf.getFileType()
-                : FileTypeManager.getInstance().getFileTypeByFileName(fileName);
+                : FileTypeManager.getInstance().getFileTypeByFileName(data.fileName);
         final DiffContentFactory factory = DiffContentFactory.getInstance();
-        final DocumentContent left = factory.create(project, oldText, fileType);
-        final DocumentContent right = factory.create(project, newText, fileType);
-        final SimpleDiffRequest request =
-                new SimpleDiffRequest("Review stop: " + fileName, left, right, oldTitle, newTitle);
-        DiffManager.getInstance().showDiff(project, request);
+        final DocumentContent left = factory.create(project, data.oldText, fileType);
+        final DocumentContent right = factory.create(project, data.newText, fileType);
+        final SimpleDiffRequest request = new SimpleDiffRequest(
+                "Review stop: " + data.fileName, left, right, data.oldTitle, data.newTitle);
+        request.putUserData(DiffUserDataKeys.SCROLL_TO_LINE, Pair.create(Side.RIGHT, Math.max(0, data.line - 1)));
+        return request;
+    }
+
+    private static String describe(IRevision revision) {
+        if (revision instanceof ILocalRevision) {
+            return "local changes";
+        } else if (revision instanceof IUnknownRevision) {
+            return "new file";
+        }
+        return revision.toString();
     }
 
     private static String readContents(IRevisionedFile file) throws Exception {

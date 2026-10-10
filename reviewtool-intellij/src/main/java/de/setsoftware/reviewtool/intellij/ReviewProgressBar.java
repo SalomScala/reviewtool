@@ -69,7 +69,7 @@ final class ReviewProgressBar extends JComponent {
         if (this.unvisited == 0 && this.partlyVisited == 0) {
             return "All relevant stops visited";
         }
-        return this.unvisited + " unvisited relevant stops left"
+        return this.unvisited + (this.unvisited == 1 ? " unvisited relevant stop left" : " unvisited relevant stops left")
                 + (this.partlyVisited > 0 ? ", " + this.partlyVisited + " partly visited" : "");
     }
 

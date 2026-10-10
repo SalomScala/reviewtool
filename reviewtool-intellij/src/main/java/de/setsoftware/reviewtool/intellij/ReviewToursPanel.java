@@ -25,6 +25,7 @@ import javax.swing.tree.TreeSelectionModel;
 import com.intellij.icons.AllIcons;
 import com.intellij.ide.actions.RevealFileAction;
 import com.intellij.ide.util.PropertiesComponent;
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.actionSystem.ActionManager;
 import com.intellij.openapi.actionSystem.ActionToolbar;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
@@ -35,8 +36,10 @@ import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.project.DumbAwareToggleAction;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.ColoredTreeCellRenderer;
+import com.intellij.ui.JBSplitter;
 import com.intellij.ui.PopupHandler;
 import com.intellij.ui.SimpleTextAttributes;
 import com.intellij.ui.components.JBLabel;
@@ -73,6 +76,8 @@ public final class ReviewToursPanel extends JPanel {
     private static final String HIDE_IRRELEVANT_KEY = "de.setsoftware.reviewtool.hideIrrelevant";
     private static final String HIDE_CHECKED_KEY = "de.setsoftware.reviewtool.hideChecked";
     private static final String HIDE_VISITED_KEY = "de.setsoftware.reviewtool.hideVisited";
+    private static final String TRACK_LOCAL_CHANGES_KEY = "de.setsoftware.reviewtool.trackLocalChanges";
+    private static final String SHOW_DETAILS_KEY = "de.setsoftware.reviewtool.showStopDetails";
 
     private static final SimpleTextAttributes ACTIVE_TOUR_ATTRIBUTES = SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES;
 
@@ -110,6 +115,10 @@ public final class ReviewToursPanel extends JPanel {
 
     private final ViewStatistics statistics = new ViewStatistics();
     private final EditorViewTracker viewTracker;
+    private final Disposable disposable = Disposer.newDisposable("CoRT tours panel");
+    private final LocalChangeTracker localChangeTracker;
+    private final StopDetailsPanel detailsPanel;
+    private final JBSplitter treeAndDetails;
     // kept in a field because ViewStatistics holds its listeners only weakly
     private final IViewStatisticsListener statisticsListener =
             (file) -> IntellijMarkerFactory.runOnEdt(this::statisticsChanged);
@@ -126,6 +135,12 @@ public final class ReviewToursPanel extends JPanel {
         this.project = project;
         this.markerFactory = markerFactory;
         this.viewTracker = new EditorViewTracker(project, this.statistics);
+        this.localChangeTracker = new LocalChangeTracker(
+                project, () -> this.tours, this::localChangesApplied, this.disposable);
+        this.localChangeTracker.setEnabled(PropertiesComponent.getInstance().getBoolean(TRACK_LOCAL_CHANGES_KEY, true));
+        this.detailsPanel = new StopDetailsPanel(project, this.disposable);
+        // side by side, because the tool window is usually wide and flat at the bottom of the IDE
+        this.treeAndDetails = new JBSplitter(false, "de.setsoftware.reviewtool.toursSplitter", 0.45f);
         final PropertiesComponent properties = PropertiesComponent.getInstance();
         this.hideIrrelevant = properties.getBoolean(HIDE_IRRELEVANT_KEY, false);
         this.hideChecked = properties.getBoolean(HIDE_CHECKED_KEY, false);
@@ -166,6 +181,16 @@ public final class ReviewToursPanel extends JPanel {
                 () -> this.hideChecked, (v) -> this.hideChecked = v));
         group.add(this.toggle("Hide Visited Stops", AllIcons.Actions.Show, HIDE_VISITED_KEY,
                 () -> this.hideVisited, (v) -> this.hideVisited = v));
+        group.add(PanelActions.toggle("Track Local Changes (Stops Follow Your Edits)", AllIcons.Actions.Lightning,
+                this.localChangeTracker::isEnabled, (state) -> {
+                    PropertiesComponent.getInstance().setValue(TRACK_LOCAL_CHANGES_KEY, state, true);
+                    this.localChangeTracker.setEnabled(state);
+                }));
+        group.add(PanelActions.toggle("Show Stop Details and Diff", AllIcons.Actions.PreviewDetails,
+                () -> this.detailsPanel.isVisible(), (state) -> {
+                    PropertiesComponent.getInstance().setValue(SHOW_DETAILS_KEY, state, true);
+                    this.setDetailsVisible(state);
+                }));
         group.addSeparator();
         group.add(PanelActions.action("Refresh Stop Markers", AllIcons.Actions.Refresh, this::hasTours,
                 this::renderStopMarkers));
@@ -204,7 +229,11 @@ public final class ReviewToursPanel extends JPanel {
             }
         });
         PopupHandler.installPopupMenu(this.tree, this.createContextMenu(), "CoRT.ToursPopup");
-        this.add(new JBScrollPane(this.tree), BorderLayout.CENTER);
+        this.tree.addTreeSelectionListener((e) -> this.updateDetails());
+        this.treeAndDetails.setFirstComponent(new JBScrollPane(this.tree));
+        this.treeAndDetails.setSecondComponent(this.detailsPanel);
+        this.setDetailsVisible(PropertiesComponent.getInstance().getBoolean(SHOW_DETAILS_KEY, true));
+        this.add(this.treeAndDetails, BorderLayout.CENTER);
 
         final JPanel bottom = new JPanel(new BorderLayout());
         bottom.setBorder(JBUI.Borders.empty(2, 4));
@@ -250,6 +279,68 @@ public final class ReviewToursPanel extends JPanel {
      */
     void dispose() {
         this.viewTracker.stop();
+        Disposer.dispose(this.disposable);
+    }
+
+    private void setDetailsVisible(boolean visible) {
+        this.detailsPanel.setVisible(visible);
+        if (visible) {
+            this.updateDetails();
+        }
+        this.treeAndDetails.revalidate();
+    }
+
+    StopDetailsPanel getDetailsPanel() {
+        return this.detailsPanel;
+    }
+
+    /**
+     * Shows the selected stop (or, if no stop is selected, the current stop) in the details panel.
+     */
+    private void updateDetails() {
+        if (this.detailsPanel == null || !this.detailsPanel.isVisible()) {
+            return;
+        }
+        Stop stop = this.getSelectedStop();
+        if (stop == null) {
+            stop = this.currentStop;
+        }
+        this.detailsPanel.showStop(stop, stop == null ? null : this.describe(stop));
+    }
+
+    private String describe(Stop stop) {
+        final StringBuilder sb = new StringBuilder("<html><b>").append(escape(stopLabel(stop))).append("</b>");
+        final String classification = stop.getClassificationFormatted().trim();
+        if (!classification.isEmpty()) {
+            sb.append(" &nbsp;[").append(escape(classification)).append(']');
+        }
+        sb.append(" &nbsp;&ndash; ").append(this.isChecked(stop) ? "checked" : this.visitedLabel(stop));
+        if (this.isIrrelevant(stop)) {
+            sb.append(", irrelevant");
+        }
+        final Tour tour = this.tours == null ? null : this.tours.getTopmostTourWith(stop);
+        if (tour != null) {
+            sb.append(" &nbsp;&middot; Tour: ").append(escape(firstLine(tour.getDescription())));
+        }
+        return sb.append("</html>").toString();
+    }
+
+    private static String escape(String s) {
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    LocalChangeTracker getLocalChangeTracker() {
+        return this.localChangeTracker;
+    }
+
+    /**
+     * Called after the stops have been traced through the local changes: the line numbers in the
+     * tree and the stop markers are updated.
+     */
+    private void localChangesApplied() {
+        this.detailsPanel.forgetShownStop();
+        this.rebuildTree();
+        this.renderStopMarkers();
     }
 
     /**
@@ -260,6 +351,8 @@ public final class ReviewToursPanel extends JPanel {
         this.currentStop = null;
         this.rebuildTree();
         this.renderStopMarkers();
+        // there may be local changes that have not been committed yet
+        this.localChangeTracker.scheduleUpdate();
     }
 
     /**
@@ -340,6 +433,8 @@ public final class ReviewToursPanel extends JPanel {
             this.updateStatus();
         }
         this.lastVisitedCount = visitedCount;
+        // the visit state in the details may have changed
+        this.updateDetails();
     }
 
     private int countStops(Predicate<Stop> predicate) {
@@ -570,11 +665,15 @@ public final class ReviewToursPanel extends JPanel {
         if (!this.checkToursAvailable()) {
             return;
         }
+        // no "new tour" hint for the very first jump, the user just started with the tours
+        final boolean firstJump = this.currentStop == null;
         final Stop next = this.statistics.getNextUnvisitedStop(this.tours, this.currentStop, new INextStopCallback() {
             @Override
             public void newTourStarted(Tour tour) {
-                IntellijNotifications.info(ReviewToursPanel.this.project,
-                        "Start of a new review tour: " + firstLine(tour.getDescription()));
+                if (!firstJump) {
+                    IntellijNotifications.info(ReviewToursPanel.this.project,
+                            "Start of a new review tour: " + firstLine(tour.getDescription()));
+                }
             }
 
             @Override

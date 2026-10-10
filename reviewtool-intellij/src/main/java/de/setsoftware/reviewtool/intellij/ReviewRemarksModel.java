@@ -7,7 +7,12 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import de.setsoftware.reviewtool.base.Logger;
+import de.setsoftware.reviewtool.base.ReviewtoolException;
 import de.setsoftware.reviewtool.model.remarks.DummyMarker;
+import de.setsoftware.reviewtool.model.remarks.FileLinePosition;
+import de.setsoftware.reviewtool.model.remarks.FilePosition;
+import de.setsoftware.reviewtool.model.remarks.GlobalPosition;
+import de.setsoftware.reviewtool.model.remarks.RemarkType;
 import de.setsoftware.reviewtool.model.remarks.ResolutionType;
 import de.setsoftware.reviewtool.model.remarks.ReviewData;
 import de.setsoftware.reviewtool.model.remarks.ReviewRemark;
@@ -33,6 +38,7 @@ final class ReviewRemarksModel {
     private final List<Listener> listeners = new ArrayList<>();
 
     private ReviewData reviewData = new ReviewData();
+    private String parseError;
     private volatile int currentRound = 1;
     private volatile String reviewer;
 
@@ -91,14 +97,60 @@ final class ReviewRemarksModel {
                     Collections.<Integer, String>emptyMap(),
                     DummyMarker.FACTORY,
                     this.remarksGetter.get());
+            this.parseError = null;
         } catch (final RuntimeException e) {
-            Logger.warn("could not parse review remarks", e);
+            Logger.debug("could not parse review remarks: " + e);
             this.reviewData = new ReviewData();
+            this.parseError = e.getMessage() != null ? e.getMessage() : e.toString();
         }
         this.notifyListeners();
     }
 
+    /**
+     * Returns the syntax error of the review remarks text, or null if it could be parsed. While
+     * there is a syntax error, the remarks cannot be changed via the model (the model would
+     * otherwise write back an empty set of remarks and the text would be lost).
+     */
+    String getParseError() {
+        return this.parseError;
+    }
+
+    private void checkWritable() {
+        if (this.parseError != null) {
+            throw new ReviewtoolException("The review remarks contain a syntax error (" + this.parseError
+                    + "). Please correct the remarks text in the \"Remarks\" tab first.");
+        }
+    }
+
+    /**
+     * Creates example review remarks that show the syntax (the IntelliJ counterpart of the example in
+     * the Eclipse syntax correction dialog).
+     */
+    static String createExampleText() {
+        final ReviewData data = new ReviewData();
+        final ReviewRemark r1 = ReviewRemark.create(new DummyMarker(), "TB", new GlobalPosition(),
+                "global review remark important to the reviewer", RemarkType.MUST_FIX);
+        r1.addComment("AUTHOR", "question to the reviewer");
+        r1.setResolution(ResolutionType.QUESTION);
+        data.merge(r1, 1);
+        final ReviewRemark r2 = ReviewRemark.create(new DummyMarker(), "TB", new FilePosition("FileName.java"),
+                "optional remark, with reference to a file", RemarkType.CAN_FIX);
+        r2.addComment("AUTHOR", "comment to refuse fixing");
+        r2.setResolution(ResolutionType.WONT_FIX);
+        data.merge(r2, 1);
+        data.merge(ReviewRemark.create(new DummyMarker(), "TB", new FileLinePosition("FileName.java", 42),
+                "remark for direct fixing in a certain line", RemarkType.ALREADY_FIXED), 1);
+        data.merge(ReviewRemark.create(new DummyMarker(), "TB", new GlobalPosition(),
+                "well done", RemarkType.POSITIVE), 2);
+        data.merge(ReviewRemark.create(new DummyMarker(), "TB", new GlobalPosition(),
+                "temporary marker for the reviewer", RemarkType.TEMPORARY), 2);
+        data.merge(ReviewRemark.create(new DummyMarker(), "TB", new GlobalPosition(),
+                "some other remark, e.g. 'part of the remarks have been communicated orally'", RemarkType.OTHER), 2);
+        return data.serialize();
+    }
+
     void mergeNewRemark(ReviewRemark remark) {
+        this.checkWritable();
         this.reviewData.merge(remark, this.currentRound);
         this.persist();
     }
@@ -129,6 +181,7 @@ final class ReviewRemarksModel {
     }
 
     void resolve(ReviewRemark remark, ResolutionType resolution, String optionalComment) {
+        this.checkWritable();
         if (optionalComment != null && !optionalComment.trim().isEmpty()) {
             remark.addComment(currentUser(), optionalComment.trim());
         }
@@ -137,11 +190,13 @@ final class ReviewRemarksModel {
     }
 
     void addComment(ReviewRemark remark, String comment) {
+        this.checkWritable();
         remark.addComment(currentUser(), comment.trim());
         this.persist();
     }
 
     void delete(ReviewRemark remark) {
+        this.checkWritable();
         this.reviewData.deleteRemark(remark);
         this.persist();
     }
