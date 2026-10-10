@@ -15,7 +15,9 @@ import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.treewalk.AbstractTreeIterator;
 import org.eclipse.jgit.treewalk.CanonicalTreeParser;
+import org.eclipse.jgit.treewalk.EmptyTreeIterator;
 import org.eclipse.jgit.treewalk.TreeWalk;
 import org.eclipse.jgit.util.io.NullOutputStream;
 
@@ -92,15 +94,14 @@ class GitRevision {
                 parentTree = parents[0].getTree().getId();
             }
         } else {
-            //initial commit => try to diff with empty tree
-            parentTree = ObjectId.fromString("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+            //initial commit => diff with the empty tree (null), which JGit does not have as an object
+            parentTree = null;
         }
 
         try (final ObjectReader objectReader = repository.newObjectReader();
                 final DiffFormatter diff = new DiffFormatter(NullOutputStream.INSTANCE)) {
 
-            final CanonicalTreeParser oldTreeIter = new CanonicalTreeParser();
-            oldTreeIter.reset(objectReader, parentTree);
+            final AbstractTreeIterator oldTreeIter = createTreeIterator(objectReader, parentTree);
             final CanonicalTreeParser newTreeIter = new CanonicalTreeParser();
             newTreeIter.reset(objectReader, this.commit.getTree());
 
@@ -135,8 +136,8 @@ class GitRevision {
                 parentTree = parents[0].getTree().getId();
             }
         } else {
-            //initial commit => try to diff with empty tree
-            parentTree = ObjectId.fromString("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+            //initial commit => diff with the empty tree (null), which JGit does not have as an object
+            parentTree = null;
             //this is technically not correct, but should not matter
             parentId = this.commit;
         }
@@ -144,8 +145,7 @@ class GitRevision {
         try (final ObjectReader objectReader = repository.newObjectReader();
                 final DiffFormatter diff = new DiffFormatter(NullOutputStream.INSTANCE)) {
 
-            final CanonicalTreeParser oldTreeIter = new CanonicalTreeParser();
-            oldTreeIter.reset(objectReader, parentTree);
+            final AbstractTreeIterator oldTreeIter = createTreeIterator(objectReader, parentTree);
             final CanonicalTreeParser newTreeIter = new CanonicalTreeParser();
             newTreeIter.reset(objectReader, this.commit.getTree());
 
@@ -191,7 +191,23 @@ class GitRevision {
         }
     }
 
+    /**
+     * Creates an iterator for the given tree. A null tree stands for the empty tree (the "parent" of
+     * an initial commit).
+     */
+    private static AbstractTreeIterator createTreeIterator(ObjectReader reader, ObjectId tree) throws IOException {
+        if (tree == null) {
+            return new EmptyTreeIterator();
+        }
+        final CanonicalTreeParser parser = new CanonicalTreeParser();
+        parser.reset(reader, tree);
+        return parser;
+    }
+
     private Map<ObjectId, String> determineContentToPathMap(Repository repo, ObjectId tree) throws IOException {
+        if (tree == null) {
+            return new HashMap<>();
+        }
         try (final TreeWalk treeWalk = new TreeWalk(repo)) {
             treeWalk.addTree(tree);
             treeWalk.setRecursive(true);

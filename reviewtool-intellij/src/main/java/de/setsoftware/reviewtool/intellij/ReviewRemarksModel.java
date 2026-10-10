@@ -33,6 +33,8 @@ final class ReviewRemarksModel {
     private final List<Listener> listeners = new ArrayList<>();
 
     private ReviewData reviewData = new ReviewData();
+    private volatile int currentRound = 1;
+    private volatile String reviewer;
 
     ReviewRemarksModel(Supplier<String> remarksGetter, Consumer<String> remarksSetter) {
         this.remarksGetter = remarksGetter;
@@ -41,6 +43,28 @@ final class ReviewRemarksModel {
 
     void addListener(Listener listener) {
         this.listeners.add(listener);
+    }
+
+    /**
+     * Sets the review round new remarks are added to and the reviewer they are attributed to (both
+     * determined from the ticket). A round smaller than 1 (ticket never reviewed) counts as round 1.
+     * A null or empty reviewer falls back to the local user name.
+     */
+    void setRoundInfo(int round, String reviewer) {
+        this.currentRound = Math.max(1, round);
+        this.reviewer = reviewer;
+    }
+
+    int getCurrentRound() {
+        return this.currentRound;
+    }
+
+    /**
+     * The user new remarks of the current round are attributed to.
+     */
+    String getReviewer() {
+        final String r = this.reviewer;
+        return r == null || r.trim().isEmpty() ? currentUser() : r;
     }
 
     ReviewData getReviewData() {
@@ -75,8 +99,33 @@ final class ReviewRemarksModel {
     }
 
     void mergeNewRemark(ReviewRemark remark) {
-        this.reviewData.merge(remark, 1);
+        this.reviewData.merge(remark, this.currentRound);
         this.persist();
+    }
+
+    /**
+     * Returns the first remark (in review round order) that still needs to be addressed, or null.
+     */
+    ReviewRemark findFirstOpenRemark() {
+        for (final ReviewRemark remark : this.getAllRemarks()) {
+            if (remark.needsFixing()) {
+                return remark;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Returns the number of remarks that still need to be addressed.
+     */
+    int countOpenRemarks() {
+        int count = 0;
+        for (final ReviewRemark remark : this.getAllRemarks()) {
+            if (remark.needsFixing()) {
+                count++;
+            }
+        }
+        return count;
     }
 
     void resolve(ReviewRemark remark, ResolutionType resolution, String optionalComment) {

@@ -13,3 +13,4 @@ build/
 reviewtool-core/build/
 reviewtool-intellij/build/
 reviewtool-intellij/.intellijPlatform/
+/.intellijPlatform/
