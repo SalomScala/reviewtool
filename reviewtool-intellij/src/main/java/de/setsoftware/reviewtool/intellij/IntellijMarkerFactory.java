@@ -1,6 +1,7 @@
 package de.setsoftware.reviewtool.intellij;
 
 import java.awt.Color;
+import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -8,6 +9,8 @@ import javax.swing.Icon;
 
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.actionSystem.ActionGroup;
+import com.intellij.openapi.actionSystem.AnAction;
+import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.application.Application;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Document;
@@ -20,10 +23,14 @@ import com.intellij.openapi.editor.markup.MarkupModel;
 import com.intellij.openapi.editor.markup.RangeHighlighter;
 import com.intellij.openapi.editor.markup.TextAttributes;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
+import com.intellij.openapi.project.DumbAwareAction;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.popup.JBPopupFactory;
+import com.intellij.openapi.ui.popup.ListPopup;
 import com.intellij.openapi.util.IconLoader;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.ColorUtil;
+import com.intellij.ui.awt.RelativePoint;
 
 /**
  * Creates and manages the gutter markers that visualize review remarks and review tour stops
@@ -263,6 +270,33 @@ public final class IntellijMarkerFactory {
         @Override
         public ActionGroup getPopupMenuActions() {
             return this.popupActions;
+        }
+
+        /**
+         * A click shows the actions in a popup whose title is the (first line of the) tooltip, so that
+         * it is clear which remark the actions refer to.
+         */
+        @Override
+        public AnAction getClickAction() {
+            if (this.popupActions == null) {
+                return null;
+            }
+            return new DumbAwareAction() {
+                @Override
+                public void actionPerformed(AnActionEvent e) {
+                    final String firstLine = CortGutterIconRenderer.this.tooltip == null
+                            ? "" : CortGutterIconRenderer.this.tooltip.split("\n")[0];
+                    final String title = firstLine.length() > 80 ? firstLine.substring(0, 77) + "..." : firstLine;
+                    final ListPopup popup = JBPopupFactory.getInstance().createActionGroupPopup(
+                            title.isEmpty() ? null : title, CortGutterIconRenderer.this.popupActions,
+                            e.getDataContext(), JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, true);
+                    if (e.getInputEvent() instanceof MouseEvent) {
+                        popup.show(new RelativePoint((MouseEvent) e.getInputEvent()));
+                    } else {
+                        popup.showInBestPositionFor(e.getDataContext());
+                    }
+                }
+            };
         }
 
         @Override

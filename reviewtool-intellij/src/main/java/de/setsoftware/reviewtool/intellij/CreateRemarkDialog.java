@@ -105,11 +105,13 @@ final class CreateRemarkDialog extends DialogWrapper {
         this.textArea.setText(prefillText == null ? "" : prefillText);
 
         final List<ReferenceItem> references = new ArrayList<>();
+        // the labels name the target, because the dialog title is not always visible
+        final String fileName = location == null ? null : location.replaceFirst(":\\d+$", "");
         if (allowedReferences.contains(PositionReference.LINE)) {
-            references.add(new ReferenceItem(PositionReference.LINE, "Line"));
+            references.add(new ReferenceItem(PositionReference.LINE, "This line (" + location + ")"));
         }
         if (allowedReferences.contains(PositionReference.FILE)) {
-            references.add(new ReferenceItem(PositionReference.FILE, "Whole file"));
+            references.add(new ReferenceItem(PositionReference.FILE, "Whole file (" + fileName + ")"));
         }
         if (allowedReferences.contains(PositionReference.GLOBAL)) {
             references.add(new ReferenceItem(PositionReference.GLOBAL, "Global (whole review)"));

@@ -95,7 +95,14 @@ public final class ReviewToolService {
      * Creates a fresh ticket connector according to the current settings.
      */
     public YouTrackConnector createTicketConnector() {
-        final SettingsState s = this.getSettings();
+        return this.createTicketConnector(
+                this.getSettings(), ReviewToolSettings.getInstance(this.project).getYoutrackToken());
+    }
+
+    /**
+     * Creates a ticket connector for the given (possibly not yet saved) settings.
+     */
+    public YouTrackConnector createTicketConnector(SettingsState s, String token) {
         if (s.youtrackUrl.isEmpty()) {
             throw new ReviewtoolException(
                     "The YouTrack URL is not configured."
@@ -103,7 +110,7 @@ public final class ReviewToolService {
         }
         final YouTrackConnector connector = new YouTrackConnector(
                 s.youtrackUrl,
-                ReviewToolSettings.getInstance(this.project).getYoutrackToken(),
+                token,
                 s.reviewFieldName,
                 s.stateFieldName,
                 s.componentFieldName,
@@ -146,9 +153,15 @@ public final class ReviewToolService {
     /**
      * Invalidates cached objects after the settings changed.
      */
-    public synchronized void settingsChanged() {
-        this.changeSource = null;
-        this.changeSourceConfig = null;
+    public void settingsChanged() {
+        synchronized (this) {
+            this.changeSource = null;
+            this.changeSourceConfig = null;
+        }
+        final ReviewToolPanel panel = this.getReviewPanel();
+        if (panel != null) {
+            IntellijMarkerFactory.runOnEdt(panel::settingsChanged);
+        }
     }
 
     private IChangeSource createChangeSource(SettingsState s) {

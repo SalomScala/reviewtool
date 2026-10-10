@@ -106,6 +106,30 @@ Zweite Runde (nach einem Durchlauf in einer echten Sandbox-IDE):
   Shown“ und Zähler; die Meldung nach dem Laden bietet direkt „Create review tours“ an.
 - Beim ersten Sprung in die Tours keine überflüssige „Start of a new tour“-Meldung mehr.
 
+Dritte Runde (Usability-Test des kompletten Ablaufs Einstellungen → Ticketliste → Review → Anmerkung → Review-Ende →
+Fixing → Fixing-Ende in der Sandbox-IDE, gegen eine lokale YouTrack-Attrappe):
+
+- **Aktuelles Ticket immer sichtbar:** Über den Tabs steht, zu welchem Ticket sie gehören (Key, Titel, Status und ggf.
+  „reviewing/fixing (review round n)“). Vorher verschwand das Ticket beim Start aus der Liste (neuer Status passt nicht
+  mehr zum Filter), und nichts zeigte mehr an, woran man gerade arbeitet. Das Ticket bleibt jetzt außerdem fett in der
+  Liste, auch nach dem Ende.
+- **Platz für die Tours:** Während eines Reviews/Fixings wird die Ticketliste ausgeblendet (Toggle „Show Ticket List“
+  in der Toolbar), danach wieder eingeblendet. Vorher bekam die Ticketliste ~60 % der Breite und der Tour-Baum nur
+  wenige Pixel (die Diff-Ansicht daneben erzwang ihre Mindestbreite).
+- **Pausierte Reviews wiederfinden:** Ein pausiertes Review (bzw. Fixing) wird in der Liste seines Modus auch nach einem
+  Neustart angezeigt, obwohl es nicht mehr zum Filter passt.
+- **Modus gesperrt während der Arbeit:** Der Modus kann während eines Reviews/Fixings nicht mehr (z. B. versehentlich
+  per Pfeiltaste) umgestellt werden; „Start Review/Fixing“ ist für das laufende Ticket deaktiviert.
+- **Einstellungen:** in Abschnitte gegliedert, mit Hinweisen und **„Test Connection“** (prüft Token, Abfragen und ob die
+  konfigurierten Felder in den Tickets existieren). Nach „OK/Apply“ und beim Öffnen des Tool-Windows wird die
+  Ticketliste automatisch geladen.
+- **Anmerkungen:** Der Dialog nennt das Ziel („This line (Calculator.java:17)“), das Gutter-Popup zeigt die Anmerkung als
+  Titel. Beim Fixing erscheint nach der letzten bearbeiteten Anmerkung „All review remarks … processed – End fixing…“.
+- **Review-Ende:** Der Dialog warnt, wenn relevante Stops noch nicht (vollständig) angesehen wurden.
+- **Summary:** Pfade relativ zum Projekt, Icons, Doppelklick/Enter öffnet die Datei bzw. die Deklaration nach dem
+  Refactoring; Änderungen innerhalb einer Zeile zählen als +1/−1 (vorher „+0/−0“).
+- Ticket-Tabelle: Mindestbreiten für Key und Status.
+
 ## Gefundene und behobene Fehler
 
 - **Unsichtbare Gutter-Icons** (zweite Runde, im Praxistest gefunden): Die Gutter-Icons der Stops und Anmerkungen
@@ -123,4 +147,9 @@ Zweite Runde (nach einem Durchlauf in einer echten Sandbox-IDE):
   ihr Test-Repository immer mit einem leeren Commit beginnt (der den leeren Tree schreibt). Neuer Regressionstest:
   `GitChangeSourceTest.testRootCommit`.
 - Die Editor-Aktion suchte das Tool-Window unter der ID „CoRT“, im gepackten Plugin heißt es aber „CoRTOriginal“.
+- **„Slow operations are prohibited on EDT“** (dritte Runde, im Praxistest als „IDE error occurred“ sichtbar): Beim Laden
+  der Anmerkungen wurden die Dateien über den Dateinamen-Index im UI-Thread gesucht, beim Öffnen einer Anmerkung/Datei
+  wurde der Code-Style (PSI) im UI-Thread bestimmt, und Einstellungsseite/Ticketliste lasen das Token im UI-Thread aus
+  dem Password-Safe. Jetzt geschieht das im Hintergrund (bzw. das Token wird zwischengespeichert), und der Sprung
+  verwendet Offsets. Im abschließenden Durchlauf enthielt das IDE-Log keine Fehler mehr.
 - Anmerkungen wurden immer Runde 1 zugeordnet (siehe oben).

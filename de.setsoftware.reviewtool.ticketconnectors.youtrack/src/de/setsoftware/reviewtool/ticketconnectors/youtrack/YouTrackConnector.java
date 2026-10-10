@@ -9,6 +9,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -216,13 +217,59 @@ public class YouTrackConnector implements ITicketConnector {
         }
     }
 
-    private List<TicketInfo> queryTickets(String query) {
+    private JsonArray queryIssues(String query) {
         final String searchUrl = String.format(
                 "%s/api/issues?$top=200&query=%s&fields=%s",
                 this.url,
                 this.urlEncode(query),
                 ISSUE_FIELDS);
-        final JsonArray issues = this.performGet(searchUrl).asArray();
+        return this.performGet(searchUrl).asArray();
+    }
+
+    /**
+     * Checks the connection and the configuration: whether the server accepts the token, how many
+     * tickets the queries find and whether the configured custom fields exist in these tickets.
+     * Returns a readable report (with warnings for suspicious settings); throws a
+     * {@link ReviewtoolException} if the server cannot be reached or rejects the token.
+     */
+    public String testConnection() {
+        final JsonValue me = this.performGet(this.url + "/api/users/me?fields=login");
+        final StringBuilder report = new StringBuilder();
+        report.append("Connected as ").append(this.asStringOrEmpty(me.asObject().get("login"))).append(".\n");
+        final Set<String> fieldNames = new LinkedHashSet<>();
+        int ticketCount = 0;
+        final Map<String, String> queries = new LinkedHashMap<>();
+        queries.putAll(this.filtersForReview);
+        queries.putAll(this.filtersForFixing);
+        for (final Map.Entry<String, String> filter : queries.entrySet()) {
+            final JsonArray issues = this.queryIssues(filter.getValue());
+            report.append("Query for ").append(filter.getKey().toLowerCase()).append(" (").append(filter.getValue())
+                .append("): ").append(issues.size()).append(" ticket(s).\n");
+            for (final JsonValue issue : issues) {
+                ticketCount++;
+                final JsonValue fields = issue.asObject().get("customFields");
+                if (fields != null && fields.isArray()) {
+                    for (final JsonValue field : fields.asArray()) {
+                        fieldNames.add(this.asStringOrEmpty(field.asObject().get("name")));
+                    }
+                }
+            }
+        }
+        if (ticketCount == 0) {
+            report.append("Warning: the queries do not find any tickets, so the field names could not be checked.\n");
+            return report.toString();
+        }
+        for (final String field : Arrays.asList(this.stateFieldName, this.reviewFieldName, this.componentFieldName)) {
+            if (!fieldNames.contains(field)) {
+                report.append("Warning: the tickets have no field '").append(field)
+                    .append("'. Available fields: ").append(String.join(", ", fieldNames)).append(".\n");
+            }
+        }
+        return report.toString();
+    }
+
+    private List<TicketInfo> queryTickets(String query) {
+        final JsonArray issues = this.queryIssues(query);
         final List<TicketInfo> ret = new ArrayList<>();
         for (final JsonValue issue : issues) {
             ret.add(this.mapTicket(issue.asObject(), new LinkedHashSet<String>()));

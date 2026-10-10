@@ -233,7 +233,7 @@ public final class ChangeSummaryGenerator {
             fs = new FileAccumulator();
             fs.binary = stop.isBinaryChange();
             fs.java = file.getName().endsWith(".java");
-            fs.path = stop.getMostRecentFile().getPath();
+            fs.path = file.getPath();
             fs.oldestRevision = stop.getHistory().isEmpty() ? null : stop.getHistory().keySet().iterator().next();
             if (fs.java) {
                 try {
@@ -244,14 +244,30 @@ public final class ChangeSummaryGenerator {
             }
             byFile.put(file, fs);
         }
-        fs.added += stop.getNumberOfAddedLines();
-        fs.removed += stop.getNumberOfRemovedLines();
+        final int added = stop.getNumberOfAddedLines();
+        final int removed = stop.getNumberOfRemovedLines();
+        if (added == 0 && removed == 0 && isChangeWithinLine(stop)) {
+            // like in Git, a change within a line counts as one changed (removed and added) line
+            fs.added++;
+            fs.removed++;
+        } else {
+            fs.added += added;
+            fs.removed += removed;
+        }
         if (!stop.isBinaryChange() && stop.isDetailedFragmentKnown()) {
             final IFragment fragment = stop.getMostRecentFragment();
             if (fragment != null) {
                 fs.changedRanges.add(new int[] {fragment.getFrom().getLine(), fragment.getTo().getLine()});
             }
         }
+    }
+
+    private static boolean isChangeWithinLine(Stop stop) {
+        if (stop.isBinaryChange() || !stop.isDetailedFragmentKnown()) {
+            return false;
+        }
+        final IFragment fragment = stop.getMostRecentFragment();
+        return fragment != null && fragment.isInline() && fragment.getTo().getColumn() > fragment.getFrom().getColumn();
     }
 
     private static List<String> determineJavaParts(FileAccumulator fs) {

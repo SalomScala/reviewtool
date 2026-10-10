@@ -232,6 +232,8 @@ public final class ReviewToursPanel extends JPanel {
         this.tree.addTreeSelectionListener((e) -> this.updateDetails());
         this.treeAndDetails.setFirstComponent(new JBScrollPane(this.tree));
         this.treeAndDetails.setSecondComponent(this.detailsPanel);
+        // the diff in the details has a large minimum width, which must not squeeze the tree
+        this.treeAndDetails.setHonorComponentsMinimumSize(false);
         this.setDetailsVisible(PropertiesComponent.getInstance().getBoolean(SHOW_DETAILS_KEY, true));
         this.add(this.treeAndDetails, BorderLayout.CENTER);
 
@@ -435,6 +437,14 @@ public final class ReviewToursPanel extends JPanel {
         this.lastVisitedCount = visitedCount;
         // the visit state in the details may have changed
         this.updateDetails();
+    }
+
+    /**
+     * Returns the number of relevant stops that have neither been viewed completely nor been marked
+     * as checked (0 if there are no tours).
+     */
+    int countRelevantStopsNotFullyVisited() {
+        return this.countStops((s) -> !this.isIrrelevant(s) && !this.isChecked(s) && !this.isFullyVisited(s));
     }
 
     private int countStops(Predicate<Stop> predicate) {
@@ -744,7 +754,7 @@ public final class ReviewToursPanel extends JPanel {
                 return;
             }
             final OpenFileDescriptor descriptor =
-                    new OpenFileDescriptor(this.project, vf, Math.max(0, fromLine - 1), 0);
+                    IntellijFileResolver.descriptorForLine(this.project, vf, fromLine - 1);
             final Editor editor = FileEditorManager.getInstance(this.project).openTextEditor(descriptor, true);
             if (editor != null) {
                 editor.getScrollingModel().scrollToCaret(ScrollType.CENTER_UP);
