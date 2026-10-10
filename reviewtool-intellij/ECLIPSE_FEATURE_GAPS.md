@@ -33,7 +33,7 @@ IntelliJ-Plugin (`reviewtool-intellij`). Legende:
 | Write remarks to ticket system / Reload review remarks | „Save Remarks to Ticket“ | ✅ Save nur aktiv bei Änderungen, neue Aktion „Reload Remarks and Changes of the Ticket“ |
 | Marker für Anmerkungen zu ganzen Dateien | Wurden nicht angezeigt | ✅ Neu: werden in der ersten Zeile angezeigt |
 | Marker automatisch beim Start | Erst nach „Show Remark Markers“ | ✅ Neu: Marker werden beim Laden eines Tickets angezeigt |
-| `CorrectSyntaxDialog` bei nicht parsebaren Anmerkungen | Parse-Fehler wird nur geloggt | ❌ |
+| `CorrectSyntaxDialog` bei nicht parsebaren Anmerkungen | Parse-Fehler wurde nur geloggt; **das Modell war dann leer, und die nächste Änderung (Anmerkung hinzufügen, als fixed markieren, …) überschrieb den gesamten Anmerkungstext** | ✅ Fehlerbanner mit Fehlermeldung und Syntax-Beispiel im Remarks-Tab; Änderungen, Hinzufügen und Review-/Fixing-Ende sind gesperrt, bis der Text korrigiert ist |
 
 ## Review-Tours
 
@@ -46,9 +46,9 @@ IntelliJ-Plugin (`reviewtool-intellij`). Legende:
 | **Fortschrittsbalken** (irrelevant / besucht / teilweise / unbesucht) | Nur Anzahl Tours/Stops | ✅ Neu: `ReviewProgressBar` |
 | Filter (checked / visited / irrelevant) werden gespeichert | Nicht gespeichert | ✅ Neu |
 | Icons je Stop nach Besuchsgrad (IconGrammar-Formen) | Text „(unvisited)“ | 🟡 Status-Icons (checked / besucht / teilweise / unbesucht / irrelevant), keine IconGrammar-Formen |
-| Stop-Info-View mit kombiniertem Diff | „Show Stop Diff“ öffnet IntelliJ-Diff | 🟡 keine eingebettete Stop-Info-View |
+| Stop-Info-View mit kombiniertem Diff | „Show Stop Diff“ öffnet IntelliJ-Diff | ✅ Detailbereich unter dem Tour-Baum: Stop-Infos (Datei, Zeilen, Klassifikation, Besuchsstatus, Tour) und eingebetteter Diff, zur Stop-Zeile gescrollt; ein-/ausblendbar. 🟡 Diff der ganzen Datei statt nur der Hunks des Stops |
 | Open in text editor | – | ➖ IntelliJ öffnet Textdateien ohnehin im Texteditor |
-| **Lokale Änderungen verfolgen** (Stop-Positionen folgen Edits, `ChangeManager`) | – | ❌ |
+| **Lokale Änderungen verfolgen** (Stop-Positionen folgen Edits, `ChangeManager`) | – | ✅ Nach dem Speichern werden die lokalen Änderungen (entprellt, im Hintergrund) analysiert und die Stops nachgeführt: Zeilennummern im Baum, Marker, Sprungziele und View-Tracking passen wieder; abschaltbar („Track Local Changes“, Port von „Stop local change tracking“) |
 
 ## Ticketauswahl
 
@@ -56,7 +56,7 @@ IntelliJ-Plugin (`reviewtool-intellij`). Legende:
 |---|---|---|
 | Spalten „Prev. reviewers“, „Prev. state“, „Open for“ | Key, Summary, State, Component | 🟡 „Open (days)“ ergänzt, Tabelle sortierbar; Vorgänger-Reviewer/-Status bräuchten pro Ticket eine Activity-Abfrage |
 | Zuletzt genutzter Filter wird gemerkt | – | ✅ Modus wird gemerkt, Wechsel lädt die Tickets neu |
-| Ticket-ID direkt eingeben | – | ❌ |
+| Ticket-ID direkt eingeben | – | ✅ „Open Ticket by ID…“ (auch für Tickets, die nicht im aktuellen Filter sind) |
 
 ## Befehle und Tastenkürzel
 
@@ -66,7 +66,7 @@ IntelliJ-Plugin (`reviewtool-intellij`). Legende:
 | Alt+5 Jump to next stop / open remark | ✅ Strg+Alt+5 (Linux: Strg+Alt+Umschalt+5) |
 | Alt+6 Show in Review content | ✅ Strg+Alt+6 (Linux: Strg+Alt+Umschalt+6) |
 | Menü „CoRT code review“ | ✅ Gruppe „CoRT Code Review“ im Tools-Menü |
-| Clear commit cache / Enable verbose logging / Stop change tracking | ❌ |
+| Clear commit cache / Enable verbose logging / Stop change tracking | ✅ „More“-Menü der Toolbar bzw. Toggle im Tours-Tab |
 
 Alt+Ziffer ist in IntelliJ für Tool-Windows belegt, und in der Linux-Keymap „Default for XWin“ (von der GNOME/KDE erben)
 sind auch Strg+Alt+4/5/6 schon vergeben – deshalb dort die Variante mit Umschalt.
@@ -76,7 +76,7 @@ sind auch Strg+Alt+4/5/6 schon vergeben – deshalb dort die Variante mit Umscha
 | Eclipse | IntelliJ |
 |---|---|
 | Team-Konfiguration als XML-Datei mit Platzhaltern | ❌ Einstellungsseite pro Projekt |
-| Relation-Matcher-Einstellungen für die Stop-Reihenfolge | ❌ fest verdrahtete Standardwerte |
+| Relation-Matcher-Einstellungen für die Stop-Reihenfolge | ✅ Tabelle in den Einstellungen: Relationen aktivieren, Priorität per Hoch/Runter, Verschachtelung im Tour-Baum |
 | Telemetrie, Umfrage am Review-Ende, End-Review-Extensions, „preferred transition“-Strategien | ❌ |
 | SVN als Change-Source | ❌ nur Git |
 | Summary: Refactoring-Erkennung, Delta-Doc | ❌ (siehe README) |
@@ -94,7 +94,27 @@ sind auch Strg+Alt+4/5/6 schon vergeben – deshalb dort die Variante mit Umscha
 - Dateisymbole und Pfade im Changes-Baum, Enter öffnet Dateien/Stops/Anmerkungen.
 - Das Tool-Window stoppt beim Schließen seinen View-Tracking-Timer und entfernt die Marker.
 
+Zweite Runde (nach einem Durchlauf in einer echten Sandbox-IDE):
+
+- Eigenes Tool-Window-Icon (vorher identisch mit dem Git-Icon) und eigene Stop-Icons im Gutter.
+- Die Hervorhebung der Stops richtet sich nach dem Editor-Farbschema statt nach dem IDE-Theme (bei dunkler IDE und
+  hellem Editor sah der geänderte Code vorher wie selektiert aus).
+- Tour-Baum und Stop-Details stehen nebeneinander (das Tool-Window ist unten meist flach und breit); die Aufteilung
+  wird gemerkt.
+- Commit-Auswahl ohne Ticket als Tabelle mit Suche (Nachricht, Autor, Hash – z. B. ein Ticket-Key), „Select All
+  Shown“ und Zähler; die Meldung nach dem Laden bietet direkt „Create review tours“ an.
+- Beim ersten Sprung in die Tours keine überflüssige „Start of a new tour“-Meldung mehr.
+
 ## Gefundene und behobene Fehler
+
+- **Unsichtbare Gutter-Icons** (zweite Runde, im Praxistest gefunden): Die Gutter-Icons der Stops und Anmerkungen
+  wurden in der neuen IntelliJ-UI nicht angezeigt (veraltete Balloon-/Arrow-Icons mit linker Ausrichtung) – damit
+  fehlte im Editor auch der Einstieg in das Quick-Fix-Popup der Anmerkungen. Jetzt mit eigenen Stop-Icons bzw. den
+  Standard-Warn-/Info-Icons.
+- **Datenverlust bei nicht parsebaren Anmerkungen** (zweite Runde): War der Anmerkungstext eines Tickets nicht im
+  CoRT-Format (z. B. frei formulierter Text), wurde das Modell stillschweigend leer – die nächste Änderung schrieb
+  dann nur noch die neue Anmerkung zurück und löschte den Rest. Jetzt werden Änderungen in diesem Zustand verweigert
+  (Tests `testRemarksWithSyntaxErrorsAreNotOverwritten`).
 
 - **Root-Commit** (`GitRevision`): Für den ersten Commit eines Repositories wurde gegen den „Empty Tree“ `4b825dc…`
   gedifft, den JGit nicht als Objekt im Repository hat → `MissingObjectException`. Das betraf jeden Review, bei dem

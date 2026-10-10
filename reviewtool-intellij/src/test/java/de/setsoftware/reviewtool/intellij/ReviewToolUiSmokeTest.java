@@ -30,10 +30,12 @@ import com.intellij.util.ui.UIUtil;
 
 import de.setsoftware.reviewtool.base.Multiset;
 import de.setsoftware.reviewtool.base.Pair;
+import de.setsoftware.reviewtool.base.ReviewtoolException;
 import de.setsoftware.reviewtool.changesources.git.GitCommitInfo;
 import de.setsoftware.reviewtool.model.api.IChangeData;
 import de.setsoftware.reviewtool.model.api.IClassification;
 import de.setsoftware.reviewtool.model.api.ICommit;
+import de.setsoftware.reviewtool.model.changestructure.Stop;
 import de.setsoftware.reviewtool.model.changestructure.Tour;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview.ICreateToursUi;
@@ -123,6 +125,53 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
         assertTrue(serialized, serialized.contains("(/) " + ReviewRemarksModel.currentUser() + ": done"));
     }
 
+    public void testRemarksWithSyntaxErrorsAreNotOverwritten() {
+        final String invalid = "Review 1:\n* muss\n*# (Foo.java, 3) old remark\n*#* dangling\nfree text\n*#* x\n";
+        final StringBuilder text = new StringBuilder(invalid);
+        final ReviewRemarksModel model = model(text);
+        model.reload();
+        assertNotNull(model.getParseError());
+        try {
+            model.mergeNewRemark(ReviewRemark.create(new DummyMarker(), "ALICE",
+                    new FileLinePosition("Bar.java", 7), "new remark", RemarkType.CAN_FIX));
+            fail("a remark must not be added while the remarks have a syntax error");
+        } catch (final ReviewtoolException e) {
+            // expected
+        }
+        assertEquals(invalid, text.toString());
+
+        text.setLength(0);
+        text.append("Review 1:\n* muss\n*# (Foo.java, 3) old remark\n");
+        model.reload();
+        assertNull(model.getParseError());
+    }
+
+    public void testExampleTextIsValid() {
+        final StringBuilder text = new StringBuilder(ReviewRemarksModel.createExampleText());
+        final ReviewRemarksModel model = model(text);
+        model.reload();
+        assertNull(model.getParseError());
+        assertEquals(6, model.getAllRemarks().size());
+    }
+
+    public void testStopOrderingSettings() {
+        // empty = the Eclipse defaults: all relation types active
+        assertEquals(StopOrderingSettings.RelationType.values().length,
+                StopOrderingSettings.createMatchers("").size());
+        assertEquals(StopOrderingSettings.normalize(""),
+                StopOrderingSettings.serialize(StopOrderingSettings.defaults()));
+        // order, explicitness (limited to the maximum of the type) and unknown entries
+        assertEquals("METHOD_CALL:NONE;SAME_FILE:ALWAYS;SIMILARITY:NONE",
+                StopOrderingSettings.normalize("METHOD_CALL:NONE;FOO:ALWAYS;SAME_FILE:ALWAYS;SIMILARITY:ALWAYS"));
+        // all relation types can be deactivated
+        assertTrue(StopOrderingSettings.createMatchers(StopOrderingSettings.serialize(
+                java.util.Collections.<StopOrderingSettings.Entry>emptyList())).isEmpty());
+
+        final StopOrderingTable table = new StopOrderingTable();
+        table.setSettings("SOURCEFOLDER:ONLY_NONTRIVIAL;SAME_FILE:NONE");
+        assertEquals("SOURCEFOLDER:ONLY_NONTRIVIAL;SAME_FILE:NONE", table.getSettings());
+    }
+
     public void testRemarksPanelGroupsTheRemarks() throws IOException {
         final StringBuilder text = new StringBuilder(TWO_ROUNDS);
         final ReviewRemarksModel model = model(text);
@@ -134,6 +183,26 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
         // "To fix", "Already fixed", "Positive", "Other remarks" (last round) and "Older remarks"
         assertEquals(5, tree.getChildCount(tree.getRoot()));
         renderToPng(panel, "remarks", 900, 400);
+    }
+
+    public void testMarkersHaveGutterIcons() {
+        this.myFixture.configureByText("Foo.java", "class Foo {\n    int a;\n    int b;\n    int c;\n}\n");
+        final com.intellij.openapi.vfs.VirtualFile file = this.myFixture.getFile().getVirtualFile();
+        final IntellijMarkerFactory markerFactory = new IntellijMarkerFactory(this.getProject());
+        try {
+            markerFactory.addRemarkMarker(file, 2, true, "a remark",
+                    new com.intellij.openapi.actionSystem.DefaultActionGroup());
+            markerFactory.createStopMarker(file, 3, 4, true, "a stop");
+            assertEquals(2, this.myFixture.findAllGutters().size());
+            // the gutter component knows the icons of both markers
+            final com.intellij.openapi.editor.ex.EditorGutterComponentEx gutter =
+                    (com.intellij.openapi.editor.ex.EditorGutterComponentEx) this.myFixture.getEditor().getGutter();
+            assertEquals(1, gutter.getGutterRenderers(1).size());
+            assertEquals(1, gutter.getGutterRenderers(2).size());
+        } finally {
+            markerFactory.clearReviewMarkers();
+            markerFactory.clearStopMarkers();
+        }
     }
 
     public void testToolWindowPanelCanBeCreated() throws IOException {
@@ -171,10 +240,30 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
             panel.navigate(1);
             assertNotNull("navigating to the first stop opens its file",
                     FileEditorManager.getInstance(this.getProject()).getSelectedTextEditor());
+            final StopDetailsPanel details = panel.getDetailsPanel();
+            final Stop shown = details.getShownStop();
+            assertNotNull("the stop details show the current stop", shown);
+            // repeated updates of the same stop (e.g. by the view tracking) must not discard the loading diff
+            details.showStop(shown, "updated description");
+            details.showStop(shown, "updated description again");
+            com.intellij.testFramework.PlatformTestUtil.waitWithEventsDispatching(
+                    "the diff of the stop was not loaded", () -> details.getLoadedStop() == shown, 20);
             panel.jumpToNextUnvisitedStop();
             panel.showNearestStop(new File(repo, "src/main/java/demo/Calculator.java"), 18);
 
             renderToPng(panel, "tours", 1000, 400);
+
+            // the stops follow local (not yet committed) edits
+            final File calculator = new File(repo, "src/main/java/demo/Calculator.java");
+            final List<Integer> linesBefore = stopStartLines(tours, calculator);
+            write(calculator, "// added line 1\n// added line 2\n// added line 3\n"
+                    + new String(Files.readAllBytes(calculator.toPath()), StandardCharsets.UTF_8));
+            assertTrue(panel.getLocalChangeTracker().updateNow());
+            final List<Integer> linesAfter = stopStartLines(tours, calculator);
+            assertEquals(linesBefore.size(), linesAfter.size());
+            for (int i = 0; i < linesBefore.size(); i++) {
+                assertEquals(linesBefore.get(i) + 3, (int) linesAfter.get(i));
+            }
         } finally {
             panel.dispose();
             markerFactory.clearStopMarkers();
@@ -183,6 +272,17 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
                 editorManager.closeFile(file);
             }
         }
+    }
+
+    private static List<Integer> stopStartLines(ToursInReview tours, File file) {
+        final List<Integer> ret = new ArrayList<>();
+        for (final Stop stop : tours.getStopsFor(file.getAbsoluteFile())) {
+            if (stop.isDetailedFragmentKnown()) {
+                ret.add(stop.getMostRecentFragment().getFrom().getLine());
+            }
+        }
+        assertFalse("no stops for " + file, ret.isEmpty());
+        return ret;
     }
 
     private File createDemoRepository() throws Exception {

@@ -11,6 +11,7 @@ import com.intellij.openapi.actionSystem.ActionGroup;
 import com.intellij.openapi.application.Application;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Document;
+import com.intellij.openapi.editor.colors.EditorColorsManager;
 import com.intellij.openapi.editor.impl.DocumentMarkupModel;
 import com.intellij.openapi.editor.markup.GutterIconRenderer;
 import com.intellij.openapi.editor.markup.HighlighterLayer;
@@ -20,8 +21,9 @@ import com.intellij.openapi.editor.markup.RangeHighlighter;
 import com.intellij.openapi.editor.markup.TextAttributes;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.IconLoader;
 import com.intellij.openapi.vfs.VirtualFile;
-import com.intellij.ui.JBColor;
+import com.intellij.ui.ColorUtil;
 
 /**
  * Creates and manages the gutter markers that visualize review remarks and review tour stops
@@ -35,10 +37,21 @@ import com.intellij.ui.JBColor;
  */
 public final class IntellijMarkerFactory {
 
-    private static final JBColor ACTIVE_BACKGROUND = new JBColor(new Color(0xD8E8FF), new Color(0x2E436E));
-    private static final JBColor INACTIVE_BACKGROUND = new JBColor(new Color(0xEDEDED), new Color(0x3A3C3F));
-    private static final JBColor ACTIVE_STRIPE = new JBColor(new Color(0x3E7BD6), new Color(0x5E8AD6));
-    private static final JBColor INACTIVE_STRIPE = new JBColor(new Color(0xB0B0B0), new Color(0x707070));
+    // the colors depend on the editor color scheme (which can be light while the IDE theme is dark
+    // and vice versa), so they are not JBColors, which follow the IDE theme
+    private static final Color ACTIVE_BACKGROUND_LIGHT = new Color(0xE6EFFC);
+    private static final Color ACTIVE_BACKGROUND_DARK = new Color(0x27324A);
+    private static final Color INACTIVE_BACKGROUND_LIGHT = new Color(0xF2F2F2);
+    private static final Color INACTIVE_BACKGROUND_DARK = new Color(0x323438);
+    private static final Color ACTIVE_STRIPE_LIGHT = new Color(0x3E7BD6);
+    private static final Color ACTIVE_STRIPE_DARK = new Color(0x5E8AD6);
+    private static final Color INACTIVE_STRIPE_LIGHT = new Color(0xB0B0B0);
+    private static final Color INACTIVE_STRIPE_DARK = new Color(0x707070);
+
+    private static final Icon STOP_ICON =
+            IconLoader.getIcon("/icons/cortStop.svg", IntellijMarkerFactory.class);
+    private static final Icon INACTIVE_STOP_ICON =
+            IconLoader.getIcon("/icons/cortStopInactive.svg", IntellijMarkerFactory.class);
 
     private final Project project;
     private final List<MarkerHandle> remarkHandles = new ArrayList<>();
@@ -147,26 +160,35 @@ public final class IntellijMarkerFactory {
         final int from = Math.max(0, Math.min(fromLine - 1, lastLine));
         final int to = Math.max(from, Math.min(toLine - 1, lastLine));
         final MarkupModel markup = DocumentMarkupModel.forDocument(doc, this.project, true);
+        final boolean dark = isDarkEditor();
         final TextAttributes attributes = new TextAttributes();
-        attributes.setBackgroundColor(active ? ACTIVE_BACKGROUND : INACTIVE_BACKGROUND);
+        attributes.setBackgroundColor(active
+                ? (dark ? ACTIVE_BACKGROUND_DARK : ACTIVE_BACKGROUND_LIGHT)
+                : (dark ? INACTIVE_BACKGROUND_DARK : INACTIVE_BACKGROUND_LIGHT));
         final RangeHighlighter highlighter = markup.addRangeHighlighter(
                 doc.getLineStartOffset(from),
                 doc.getLineEndOffset(to),
                 HighlighterLayer.SELECTION - 1,
                 attributes,
                 HighlighterTargetArea.LINES_IN_RANGE);
-        highlighter.setErrorStripeMarkColor(active ? ACTIVE_STRIPE : INACTIVE_STRIPE);
+        highlighter.setErrorStripeMarkColor(active
+                ? (dark ? ACTIVE_STRIPE_DARK : ACTIVE_STRIPE_LIGHT)
+                : (dark ? INACTIVE_STRIPE_DARK : INACTIVE_STRIPE_LIGHT));
         highlighter.setErrorStripeTooltip(tooltip);
         highlighter.setGutterIconRenderer(new CortGutterIconRenderer(icon, tooltip, null));
         return new MarkerHandle(markup, highlighter);
     }
 
+    private static boolean isDarkEditor() {
+        return ColorUtil.isDark(EditorColorsManager.getInstance().getGlobalScheme().getDefaultBackground());
+    }
+
     static Icon reviewIcon(boolean warning) {
-        return warning ? AllIcons.General.BalloonWarning : AllIcons.General.BalloonInformation;
+        return warning ? AllIcons.General.Warning : AllIcons.General.Information;
     }
 
     static Icon stopIcon(boolean active) {
-        return active ? AllIcons.General.ArrowRight : AllIcons.General.ArrowDown;
+        return active ? STOP_ICON : INACTIVE_STOP_ICON;
     }
 
     static void runOnEdt(Runnable r) {
@@ -235,7 +257,7 @@ public final class IntellijMarkerFactory {
 
         @Override
         public Alignment getAlignment() {
-            return Alignment.LEFT;
+            return Alignment.RIGHT;
         }
 
         @Override

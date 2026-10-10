@@ -30,16 +30,7 @@ import de.setsoftware.reviewtool.irrelevancestrategies.basicfilters.FileDeletion
 import de.setsoftware.reviewtool.irrelevancestrategies.basicfilters.ImportChangeFilter;
 import de.setsoftware.reviewtool.irrelevancestrategies.basicfilters.PackageDeclarationFilter;
 import de.setsoftware.reviewtool.irrelevancestrategies.basicfilters.WhitespaceChangeFilter;
-import de.setsoftware.reviewtool.ordering.HierarchyExplicitness;
-import de.setsoftware.reviewtool.ordering.InSameFileRelation;
-import de.setsoftware.reviewtool.ordering.InSameSourceFolderRelation;
-import de.setsoftware.reviewtool.ordering.InSameSystemTestRelation;
-import de.setsoftware.reviewtool.ordering.MethodCallRelation;
-import de.setsoftware.reviewtool.ordering.MethodOverrideRelation;
-import de.setsoftware.reviewtool.ordering.RelationMatcher;
 import de.setsoftware.reviewtool.ordering.StopOrdering;
-import de.setsoftware.reviewtool.ordering.TokenSimilarityRelation;
-import de.setsoftware.reviewtool.ordering.XsdBeforeRestRelation;
 import de.setsoftware.reviewtool.tourrestructuring.onestop.OneStopPerPartOfFileRestructuring;
 import de.setsoftware.reviewtool.intellij.ReviewToolSettings.SettingsState;
 import de.setsoftware.reviewtool.model.TicketLinkSettings;
@@ -223,6 +214,14 @@ public final class ReviewToolService {
     }
 
     /**
+     * Analyzes the local (not yet committed) changes in the working copies, so that the review stops
+     * can be traced to the current line numbers.
+     */
+    public synchronized void analyzeLocalChanges() throws ChangeSourceException {
+        this.getChangeSource().analyzeLocalChanges(null);
+    }
+
+    /**
      * Returns the most recent Git commits so that the user can pick some for a ticket-less review.
      */
     public List<GitCommitInfo> getRecentCommits(int max, IChangeSourceUi ui) throws ChangeSourceException {
@@ -264,20 +263,12 @@ public final class ReviewToolService {
 
     /**
      * The stop ordering algorithm of the cognitive support. It groups and sorts the stops using the
-     * default set of relation matchers (the same defaults the Eclipse UI uses when nothing has been
-     * configured). This is the compute intensive clustering; it is run inside a cancelable
+     * relation matchers configured in the settings (by default the same ones the Eclipse UI uses when
+     * nothing has been configured). This is the compute intensive clustering; it is run inside a cancelable
      * background task and falls back to a faster mode for very large change sets.
      */
     private IStopOrdering createStopOrdering() {
-        final List<RelationMatcher> relations = Arrays.asList(
-                new InSameFileRelation(HierarchyExplicitness.ONLY_NONTRIVIAL),
-                new InSameSourceFolderRelation(HierarchyExplicitness.ALWAYS),
-                new InSameSystemTestRelation(HierarchyExplicitness.ALWAYS),
-                new MethodOverrideRelation(HierarchyExplicitness.ONLY_NONTRIVIAL),
-                new MethodCallRelation(HierarchyExplicitness.NONE),
-                new TokenSimilarityRelation(),
-                new XsdBeforeRestRelation(HierarchyExplicitness.NONE));
-        return new StopOrdering(relations);
+        return new StopOrdering(StopOrderingSettings.createMatchers(this.getSettings().stopOrdering));
     }
 
     /**

@@ -6,6 +6,8 @@ import javax.swing.JPanel;
 import com.intellij.openapi.options.Configurable;
 import com.intellij.openapi.options.ConfigurationException;
 import com.intellij.openapi.project.Project;
+import com.intellij.ui.TitledSeparator;
+import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBPasswordField;
 import com.intellij.ui.components.JBTextField;
 import com.intellij.util.ui.FormBuilder;
@@ -35,6 +37,7 @@ public class ReviewToolConfigurable implements Configurable {
     private JBTextField ticketLinkPatternField;
     private JBTextField logMessagePatternField;
     private JBTextField maxDiffThresholdField;
+    private StopOrderingTable stopOrderingTable;
 
     public ReviewToolConfigurable(Project project) {
         this.project = project;
@@ -62,6 +65,7 @@ public class ReviewToolConfigurable implements Configurable {
         this.ticketLinkPatternField = new JBTextField();
         this.logMessagePatternField = new JBTextField();
         this.maxDiffThresholdField = new JBTextField();
+        this.stopOrderingTable = new StopOrderingTable();
 
         this.panel = FormBuilder.createFormBuilder()
                 .addLabeledComponent("YouTrack URL:", this.urlField)
@@ -79,6 +83,10 @@ public class ReviewToolConfigurable implements Configurable {
                 .addLabeledComponent("Ticket link pattern (empty = derive from URL):", this.ticketLinkPatternField)
                 .addLabeledComponent("Commit message pattern (with ${key}):", this.logMessagePatternField)
                 .addLabeledComponent("Max file size for textual diff (bytes):", this.maxDiffThresholdField)
+                .addComponent(new TitledSeparator("Grouping and Order of the Stops in a Tour"))
+                .addComponent(new JBLabel("<html>The active relations are used (in this priority order) to group"
+                        + " and sort the stops when the tours are created.</html>"))
+                .addComponent(this.stopOrderingTable.getComponent())
                 .addComponentFillVertically(new JPanel(), 0)
                 .getPanel();
         return this.panel;
@@ -105,7 +113,8 @@ public class ReviewToolConfigurable implements Configurable {
                 || !this.fixingFilterField.getText().equals(s.fixingFilterQuery)
                 || !this.ticketLinkPatternField.getText().equals(s.ticketLinkPattern)
                 || !this.logMessagePatternField.getText().equals(s.logMessagePattern)
-                || !this.maxDiffThresholdField.getText().equals(Long.toString(s.maxTextDiffFileSizeThreshold));
+                || !this.maxDiffThresholdField.getText().equals(Long.toString(s.maxTextDiffFileSizeThreshold))
+                || !this.stopOrderingTable.getSettings().equals(StopOrderingSettings.normalize(s.stopOrdering));
     }
 
     @Override
@@ -131,6 +140,7 @@ public class ReviewToolConfigurable implements Configurable {
         s.ticketLinkPattern = this.ticketLinkPatternField.getText().trim();
         s.logMessagePattern = this.logMessagePatternField.getText().trim();
         s.maxTextDiffFileSizeThreshold = threshold;
+        s.stopOrdering = this.stopOrderingTable.getSettings();
         this.getSettings().setYoutrackToken(new String(this.tokenField.getPassword()));
         ReviewToolService.getInstance(this.project).settingsChanged();
     }
@@ -153,6 +163,7 @@ public class ReviewToolConfigurable implements Configurable {
         this.ticketLinkPatternField.setText(s.ticketLinkPattern);
         this.logMessagePatternField.setText(s.logMessagePattern);
         this.maxDiffThresholdField.setText(Long.toString(s.maxTextDiffFileSizeThreshold));
+        this.stopOrderingTable.setSettings(s.stopOrdering);
     }
 
     @Override

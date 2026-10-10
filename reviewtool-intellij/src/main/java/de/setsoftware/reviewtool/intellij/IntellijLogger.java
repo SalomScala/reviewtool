@@ -1,5 +1,7 @@
 package de.setsoftware.reviewtool.intellij;
 
+import com.intellij.openapi.diagnostic.LogLevel;
+
 import de.setsoftware.reviewtool.base.Logger;
 
 /**
@@ -9,6 +11,15 @@ public class IntellijLogger extends Logger {
 
     private static final com.intellij.openapi.diagnostic.Logger LOG =
             com.intellij.openapi.diagnostic.Logger.getInstance("CoRT");
+
+    /**
+     * Enables the verbose logging of the core and makes the debug messages visible in the IDE log
+     * (the counterpart of the Eclipse "Enable verbose logging" command).
+     */
+    public static void enableVerboseLogging() {
+        Logger.setVerbose();
+        LOG.setLevel(LogLevel.DEBUG);
+    }
 
     @Override
     protected void log(int status, String message) {

@@ -26,6 +26,22 @@ final class IntellijNotifications {
         notify(project, message, NotificationType.INFORMATION, false);
     }
 
+    /**
+     * Shows an information with an action link (e.g. the next step of the workflow).
+     */
+    static void info(Project project, String message, String actionText, Runnable action) {
+        IntellijMarkerFactory.runOnEdt(() -> {
+            if (project.isDisposed()) {
+                return;
+            }
+            final Notification notification = NotificationGroupManager.getInstance()
+                    .getNotificationGroup(GROUP_ID)
+                    .createNotification(TITLE, message, NotificationType.INFORMATION);
+            notification.addAction(NotificationAction.createSimpleExpiring(actionText, action));
+            notification.notify(project);
+        });
+    }
+
     static void warn(Project project, String message) {
         notify(project, message, NotificationType.WARNING, false);
     }

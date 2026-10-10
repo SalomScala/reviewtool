@@ -19,7 +19,7 @@
         <toolWindow
                 id="CoRT"
                 anchor="bottom"
-                icon="AllIcons.Toolwindows.ToolWindowChanges"
+                icon="/icons/cortToolWindow.svg"
                 factoryClass="de.setsoftware.reviewtool.intellij.ReviewToolWindowFactory"/>
         <projectConfigurable
                 parentId="tools"

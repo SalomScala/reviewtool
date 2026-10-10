@@ -35,6 +35,8 @@ public final class ReviewToolSettings implements PersistentStateComponent<Review
         public String ticketLinkPattern = "";
         public String logMessagePattern = ".*${key}([^0-9].*)?";
         public long maxTextDiffFileSizeThreshold = 1048576;
+        /** The relation types for the stop ordering, see {@link StopOrderingSettings}; empty = defaults. */
+        public String stopOrdering = "";
     }
 
     private static final CredentialAttributes TOKEN_ATTRIBUTES =

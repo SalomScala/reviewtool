@@ -26,13 +26,16 @@ import com.intellij.openapi.actionSystem.DefaultActionGroup;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.project.DumbAwareAction;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.DialogBuilder;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.ColoredTreeCellRenderer;
+import com.intellij.ui.EditorNotificationPanel;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.PopupHandler;
 import com.intellij.ui.SimpleTextAttributes;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBScrollPane;
+import com.intellij.ui.components.JBTextArea;
 import com.intellij.ui.treeStructure.Tree;
 import com.intellij.util.ui.JBUI;
 import com.intellij.util.ui.tree.TreeUtil;
@@ -152,6 +155,8 @@ public final class ReviewRemarksPanel extends JPanel {
     private final DefaultTreeModel treeModel = new DefaultTreeModel(this.treeRoot);
     private final Tree tree = new Tree(this.treeModel);
     private final JBLabel statusLabel = new JBLabel();
+    private final EditorNotificationPanel syntaxErrorBanner =
+            new EditorNotificationPanel(EditorNotificationPanel.Status.Error);
 
     public ReviewRemarksPanel(Project project, ReviewRemarksModel model) {
         super(new BorderLayout());
@@ -175,7 +180,12 @@ public final class ReviewRemarksPanel extends JPanel {
         final ActionToolbar toolbar = ActionManager.getInstance().createActionToolbar(
                 "CoRT.Remarks", toolbarGroup, true);
         toolbar.setTargetComponent(this);
-        this.add(toolbar.getComponent(), BorderLayout.NORTH);
+        final JPanel north = new JPanel(new BorderLayout());
+        north.add(toolbar.getComponent(), BorderLayout.NORTH);
+        this.syntaxErrorBanner.createActionLabel("Show example of the syntax", this::showSyntaxExample);
+        this.syntaxErrorBanner.setVisible(false);
+        north.add(this.syntaxErrorBanner, BorderLayout.SOUTH);
+        this.add(north, BorderLayout.NORTH);
 
         this.tree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
         this.tree.setRootVisible(false);
@@ -213,7 +223,31 @@ public final class ReviewRemarksPanel extends JPanel {
         this.updateStatus(0, 0);
     }
 
+    private void showSyntaxExample() {
+        final JBTextArea example = new JBTextArea(ReviewRemarksModel.createExampleText(), 18, 70);
+        example.setEditable(false);
+        final DialogBuilder builder = new DialogBuilder(this.project);
+        builder.setTitle("Syntax of the Review Remarks");
+        builder.setCenterPanel(new JBScrollPane(example));
+        builder.addOkAction();
+        builder.show();
+    }
+
+    private void updateSyntaxErrorBanner() {
+        final String error = this.model.getParseError();
+        if (error == null) {
+            this.syntaxErrorBanner.setVisible(false);
+        } else {
+            this.syntaxErrorBanner.setText("Syntax error: " + error + " - correct the remarks text first");
+            this.syntaxErrorBanner.setToolTipText("<html>The review remarks text has a syntax error: "
+                    + escape(error) + "<br>The remarks cannot be changed (and no remark can be added) until the"
+                    + " text is corrected, so that nothing is overwritten.</html>");
+            this.syntaxErrorBanner.setVisible(true);
+        }
+    }
+
     private void rebuildTree() {
+        this.updateSyntaxErrorBanner();
         final ReviewRemark previouslySelected = this.getSelectedRemark();
         this.treeRoot.removeAllChildren();
 
@@ -278,10 +312,13 @@ public final class ReviewRemarksPanel extends JPanel {
     }
 
     private void updateStatus(int remarkCount, int openCount) {
-        if (remarkCount == 0) {
+        if (this.model.getParseError() != null) {
+            this.statusLabel.setText("Syntax error in the review remarks");
+        } else if (remarkCount == 0) {
             this.statusLabel.setText("No remarks (round " + this.model.getCurrentRound() + ")");
         } else {
-            this.statusLabel.setText(remarkCount + " remarks, " + openCount + " still to fix (round "
+            this.statusLabel.setText(remarkCount + (remarkCount == 1 ? " remark, " : " remarks, ") + openCount
+                    + " still to fix (round "
                     + this.model.getCurrentRound() + ")");
         }
     }
@@ -386,7 +423,7 @@ public final class ReviewRemarksPanel extends JPanel {
         case WONT_FIX:
             return AllIcons.Actions.Cancel;
         case QUESTION:
-            return AllIcons.General.QuestionDialog;
+            return AllIcons.Actions.Help;
         case OPEN:
         default:
             break;
