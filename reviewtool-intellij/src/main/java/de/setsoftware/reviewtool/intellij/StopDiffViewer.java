@@ -1,15 +1,20 @@
 package de.setsoftware.reviewtool.intellij;
 
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import com.intellij.diff.DiffContentFactory;
 import com.intellij.diff.DiffManager;
 import com.intellij.diff.comparison.ComparisonManager;
 import com.intellij.diff.comparison.ComparisonPolicy;
 import com.intellij.diff.comparison.DiffTooBigException;
+import com.intellij.diff.contents.DiffContent;
 import com.intellij.diff.contents.DocumentContent;
 import com.intellij.diff.requests.SimpleDiffRequest;
 import com.intellij.diff.fragments.LineFragment;
@@ -81,6 +86,11 @@ final class StopDiffViewer {
      * Number of unchanged lines shown above and below the stop's changes.
      */
     static final int CONTEXT_LINES = 3;
+
+    /**
+     * The textual form of a git revision: the commit hash and the commit time in seconds.
+     */
+    private static final Pattern GIT_REVISION = Pattern.compile("([0-9a-f]{40}) \\((\\d+)\\)");
 
     private static final String ONLY_STOP_CHANGES_KEY = "de.setsoftware.reviewtool.stopDiffOnlyStopChanges";
 
@@ -181,14 +191,14 @@ final class StopDiffViewer {
         final DiffContentFactory factory = DiffContentFactory.getInstance();
         final StopDiffExcerpt excerpt = onlyStopChanges ? data.excerpt : null;
         if (excerpt == null) {
-            final DocumentContent left = factory.create(project, data.oldText, fileType);
+            final DiffContent left = oldContent(project, factory, data.oldText, fileType);
             final DocumentContent right = factory.create(project, data.newText, fileType);
             final SimpleDiffRequest request = new SimpleDiffRequest(
                     "Review stop: " + data.fileName, left, right, data.oldTitle, data.newTitle);
             request.putUserData(DiffUserDataKeys.SCROLL_TO_LINE, Pair.create(Side.RIGHT, Math.max(0, data.line - 1)));
             return request;
         }
-        final DocumentContent left = factory.create(project, excerpt.getOldText(), fileType);
+        final DiffContent left = oldContent(project, factory, excerpt.getOldText(), fileType);
         left.putUserData(DiffUserDataKeysEx.LINE_NUMBER_CONVERTOR, excerpt::toOldLine);
         final DocumentContent right = factory.create(project, excerpt.getNewText(), fileType);
         right.putUserData(DiffUserDataKeysEx.LINE_NUMBER_CONVERTOR, excerpt::toNewLine);
@@ -200,13 +210,35 @@ final class StopDiffViewer {
         return request;
     }
 
+    /**
+     * The content for the old side of the diff. An empty old text (a new file) is shown as empty
+     * content, otherwise the diff would match an empty line of the new file with the empty old
+     * "line" and show the new file as two changes.
+     */
+    private static DiffContent oldContent(Project project, DiffContentFactory factory, String text, FileType type) {
+        return text.isEmpty() ? factory.createEmpty() : factory.create(project, text, type);
+    }
+
     private static String describe(IRevision revision) {
         if (revision instanceof ILocalRevision) {
             return "local changes";
         } else if (revision instanceof IUnknownRevision) {
             return "new file";
         }
-        return revision.toString();
+        return describeRevisionText(revision.toString());
+    }
+
+    /**
+     * Shortens the textual form of a git revision ("hash (seconds)") to the abbreviated hash and a
+     * readable commit time. Other revisions (e.g. SVN revision numbers) are returned unchanged.
+     */
+    static String describeRevisionText(String text) {
+        final Matcher m = GIT_REVISION.matcher(text);
+        if (!m.matches()) {
+            return text;
+        }
+        final Date time = new Date(Long.parseLong(m.group(2)) * 1000L);
+        return m.group(1).substring(0, 7) + ", " + new SimpleDateFormat("yyyy-MM-dd HH:mm").format(time);
     }
 
     private static String readContents(IRevisionedFile file) throws Exception {

@@ -124,10 +124,15 @@ public final class ReviewToursPanel extends JPanel {
             (file) -> IntellijMarkerFactory.runOnEdt(this::statisticsChanged);
 
     private ToursInReview tours;
+    private Runnable allStopsVisitedListener;
+    private Consumer<Stop> addRemarkListener;
+    private int lastNotVisitedCount = -1;
     private boolean hideIrrelevant;
     private boolean hideChecked;
     private boolean hideVisited;
     private Stop currentStop;
+    /** True iff the current stop has changed since the last rebuild of the tree (so it must be selected). */
+    private boolean currentStopChanged;
     private int lastVisitedCount = -1;
 
     public ReviewToursPanel(Project project, IntellijMarkerFactory markerFactory) {
@@ -250,6 +255,9 @@ public final class ReviewToursPanel extends JPanel {
                 this::showSelectedStopCode));
         menu.add(PanelActions.action("Show Diff", AllIcons.Actions.Diff, () -> this.getSelectedStop() != null,
                 this::showSelectedStopDiff));
+        menu.add(PanelActions.action("Add Remark...", AllIcons.General.Add,
+                () -> this.getSelectedStop() != null && this.addRemarkListener != null,
+                () -> this.addRemarkListener.accept(this.getSelectedStop())));
         menu.add(PanelActions.action("Open Containing Folder", AllIcons.Actions.MenuOpen, () -> this.getSelectedStop() != null,
                 () -> this.openContainingFolder(this.getSelectedStop())));
         menu.add(PanelActions.action(
@@ -350,7 +358,8 @@ public final class ReviewToursPanel extends JPanel {
      */
     public void setTours(ToursInReview tours) {
         this.tours = tours;
-        this.currentStop = null;
+        this.setCurrentStop(null);
+        this.lastNotVisitedCount = tours == null ? -1 : this.countRelevantStopsNotFullyVisited();
         this.rebuildTree();
         this.renderStopMarkers();
         // there may be local changes that have not been committed yet
@@ -360,18 +369,34 @@ public final class ReviewToursPanel extends JPanel {
     /**
      * Returns true iff tours have been created.
      */
+    /**
+     * Returns the shown tours (null if there are none).
+     */
+    ToursInReview getTours() {
+        return this.tours;
+    }
+
     public boolean hasTours() {
         return this.tours != null;
     }
 
+    private void setCurrentStop(Stop stop) {
+        this.currentStop = stop;
+        this.currentStopChanged = true;
+    }
+
     private void rebuildTree() {
         IntellijMarkerFactory.runOnEdt(() -> {
+            // keep the selected stop selected (e.g. after marking it as checked), otherwise select the current stop
+            final Stop selected = this.getSelectedStop();
+            final Stop toSelect = selected != null && !this.currentStopChanged ? selected : this.currentStop;
+            this.currentStopChanged = false;
             this.treeRoot.removeAllChildren();
             DefaultMutableTreeNode currentStopNode = null;
             if (this.tours != null) {
                 for (final Tour tour : this.tours.getTopmostTours()) {
                     final DefaultMutableTreeNode tourNode = new DefaultMutableTreeNode(new TourNode(tour));
-                    final DefaultMutableTreeNode found = this.addChildren(tourNode, tour);
+                    final DefaultMutableTreeNode found = this.addChildren(tourNode, tour, toSelect);
                     if (found != null) {
                         currentStopNode = found;
                     }
@@ -390,16 +415,16 @@ public final class ReviewToursPanel extends JPanel {
     }
 
     /**
-     * Adds the child nodes for the given tour and returns the node of the current stop, if it is
+     * Adds the child nodes for the given tour and returns the node of the stop to select, if it is
      * contained.
      */
-    private DefaultMutableTreeNode addChildren(DefaultMutableTreeNode parentNode, Tour tour) {
+    private DefaultMutableTreeNode addChildren(DefaultMutableTreeNode parentNode, Tour tour, Stop toSelect) {
         DefaultMutableTreeNode currentStopNode = null;
         for (final TourElement element : tour.getChildren()) {
             if (element instanceof Tour) {
                 final Tour subTour = (Tour) element;
                 final DefaultMutableTreeNode subNode = new DefaultMutableTreeNode(new TourNode(subTour));
-                final DefaultMutableTreeNode found = this.addChildren(subNode, subTour);
+                final DefaultMutableTreeNode found = this.addChildren(subNode, subTour, toSelect);
                 if (found != null) {
                     currentStopNode = found;
                 }
@@ -416,13 +441,36 @@ public final class ReviewToursPanel extends JPanel {
                     continue;
                 }
                 final DefaultMutableTreeNode stopNode = new DefaultMutableTreeNode(new StopNode(stop));
-                if (stop == this.currentStop) {
+                if (stop == toSelect) {
                     currentStopNode = stopNode;
                 }
                 parentNode.add(stopNode);
             }
         }
         return currentStopNode;
+    }
+
+    /**
+     * Sets the action that is called when the last relevant stop has been viewed completely (or
+     * marked as checked).
+     */
+    void setAllStopsVisitedListener(Runnable listener) {
+        this.allStopsVisitedListener = listener;
+    }
+
+    /**
+     * Sets the action that adds a review remark for a stop (used by the context menu).
+     */
+    void setAddRemarkListener(Consumer<Stop> listener) {
+        this.addRemarkListener = listener;
+    }
+
+    private void checkAllStopsVisited() {
+        final int notVisited = this.tours == null ? -1 : this.countRelevantStopsNotFullyVisited();
+        if (this.lastNotVisitedCount > 0 && notVisited == 0 && this.allStopsVisitedListener != null) {
+            this.allStopsVisitedListener.run();
+        }
+        this.lastNotVisitedCount = notVisited;
     }
 
     private void statisticsChanged() {
@@ -437,6 +485,7 @@ public final class ReviewToursPanel extends JPanel {
         this.lastVisitedCount = visitedCount;
         // the visit state in the details may have changed
         this.updateDetails();
+        this.checkAllStopsVisited();
     }
 
     /**
@@ -603,7 +652,10 @@ public final class ReviewToursPanel extends JPanel {
         }
     }
 
-    private Stop getSelectedStop() {
+    /**
+     * Returns the stop selected in the tree (null if no stop is selected).
+     */
+    Stop getSelectedStop() {
         final DefaultMutableTreeNode node = this.getSelectedNode();
         if (node != null && node.getUserObject() instanceof StopNode) {
             return ((StopNode) node.getUserObject()).stop;
@@ -617,6 +669,7 @@ public final class ReviewToursPanel extends JPanel {
         }
         this.statistics.toggleExplicitlyCheckedMark(Collections.singletonList(stop));
         this.rebuildTree();
+        this.checkAllStopsVisited();
     }
 
     private void openContainingFolder(Stop stop) {
@@ -712,7 +765,7 @@ public final class ReviewToursPanel extends JPanel {
             IntellijNotifications.info(this.project, "The file " + file.getName() + " is not part of the review tours.");
             return;
         }
-        this.currentStop = nearest.getSecond();
+        this.setCurrentStop(nearest.getSecond());
         if (!nearest.getFirst().equals(this.tours.getActiveTour())) {
             this.activateTour(nearest.getFirst());
         } else {
@@ -736,7 +789,7 @@ public final class ReviewToursPanel extends JPanel {
      * remarks are not prefilled with it.
      */
     private void jumpToStop(Stop stop) {
-        this.currentStop = stop;
+        this.setCurrentStop(stop);
         final Tour tour = this.tours.getTopmostTourWith(stop);
         if (tour != null && !tour.equals(this.tours.getActiveTour())) {
             this.activateTour(tour);
@@ -768,6 +821,7 @@ public final class ReviewToursPanel extends JPanel {
      */
     private void renderStopMarkers() {
         if (this.tours == null) {
+            IntellijMarkerFactory.runOnEdt(this.markerFactory::clearStopMarkers);
             return;
         }
         IntellijMarkerFactory.runOnEdt(() -> ApplicationManager.getApplication().runReadAction(this::doRenderStopMarkers));

@@ -46,6 +46,7 @@ import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileTypes.FileTypeManager;
+import com.intellij.openapi.vcs.FileStatus;
 import com.intellij.openapi.ide.CopyPasteManager;
 import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.progress.ProcessCanceledException;
@@ -75,9 +76,12 @@ import de.setsoftware.reviewtool.model.EndTransition;
 import de.setsoftware.reviewtool.model.ITicketData;
 import de.setsoftware.reviewtool.model.TicketInfo;
 import de.setsoftware.reviewtool.model.api.IChange;
+import de.setsoftware.reviewtool.model.api.FileChangeType;
 import de.setsoftware.reviewtool.model.api.IChangeData;
 import de.setsoftware.reviewtool.model.api.ICommit;
+import de.setsoftware.reviewtool.model.api.IRevisionedFile;
 import de.setsoftware.reviewtool.model.api.PositionReference;
+import de.setsoftware.reviewtool.model.changestructure.Stop;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
 import de.setsoftware.reviewtool.model.remarks.DummyMarker;
 import de.setsoftware.reviewtool.model.remarks.FileLinePosition;
@@ -104,6 +108,10 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     private static final String MODE_KEY = "de.setsoftware.reviewtool.mode";
     /** The ticket whose review/fixing was started and not finished yet (e.g. paused), per project. */
     private static final String UNFINISHED_TICKET_KEY = "de.setsoftware.reviewtool.unfinishedTicket";
+    /** Prefix for the backup of remarks that were changed but not saved to the ticket yet. */
+    private static final String UNSAVED_REMARKS_PREFIX = "de.setsoftware.reviewtool.unsavedRemarks.";
+    /** Suffix of the property with the remarks of the ticket the unsaved changes were based on. */
+    private static final String UNSAVED_REMARKS_BASE_SUFFIX = ".base";
     private static final int TAB_CHANGES = 0;
     private static final int TAB_TOURS = 1;
     private static final int TAB_REMARKS = 2;
@@ -115,10 +123,12 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     private static final class FileNode {
         private final String label;
         private final File localFile;
+        private final FileChangeType type;
 
-        FileNode(String label, File localFile) {
+        FileNode(String label, File localFile, FileChangeType type) {
             this.label = label;
             this.localFile = localFile;
+            this.type = type;
         }
 
         @Override
@@ -161,6 +171,16 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     private String workingOnKey;
     private int currentRound;
     private int lastOpenRemarkCount;
+    /** False while the remarks of the shown ticket are loading or could not be loaded. */
+    private boolean remarksLoaded = true;
+    /** True if the remarks/information of the shown ticket could not be loaded. */
+    private boolean ticketLoadFailed;
+    /** The ticket (or {@link #NO_TICKET_KEY}) the tours in the "Tours" tab belong to, or null. */
+    private String toursKey;
+    /** The tours of the working ticket, put aside while another ticket is shown (or null). */
+    private ToursInReview parkedWorkingTours;
+    /** The tickets for which restoring unsaved remarks has already been offered in this session. */
+    private final Set<String> unsavedRemarksOffered = new LinkedHashSet<>();
     private String savedRemarks = "";
     private boolean remarksDirty;
     private boolean updatingRemarksText;
@@ -177,6 +197,8 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                 () -> this.remarksArea.getText(),
                 (text) -> this.setRemarksTextFromModel(text));
         this.remarksPanel = new ReviewRemarksPanel(project, this.remarksModel);
+        this.toursPanel.setAllStopsVisitedListener(this::allStopsVisited);
+        this.toursPanel.setAddRemarkListener(this::addRemarkForStop);
         this.remarksModel.addListener(() -> {
             if (this.remarkMarkersShown) {
                 this.renderRemarkMarkers();
@@ -316,7 +338,12 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         label.append(this.currentTicketKey, SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
         final TicketInfo info = this.currentTicketInfo;
         if (info == null || !info.getId().equals(this.currentTicketKey)) {
-            label.append("  loading...", SimpleTextAttributes.GRAYED_ATTRIBUTES);
+            if (this.ticketLoadFailed) {
+                label.append("  could not be loaded from YouTrack - see the notification (Retry)",
+                        SimpleTextAttributes.ERROR_ATTRIBUTES);
+            } else {
+                label.append("  loading...", SimpleTextAttributes.GRAYED_ATTRIBUTES);
+            }
             return;
         }
         label.append("  " + info.getSummaryIncludingParent());
@@ -440,6 +467,23 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                 }
             }
         }.queue();
+    }
+
+    /**
+     * Updates the row of the given ticket in the list with the freshly loaded information (e.g. its
+     * new state), keeping the information from its history that has already been loaded.
+     */
+    private void updateRowKeepingHistory(TicketInfo info) {
+        if (info == null) {
+            return;
+        }
+        final int index = this.ticketModel.indexOf(info.getId());
+        if (index < 0) {
+            return;
+        }
+        final TicketInfo old = this.ticketModel.getTicket(index);
+        this.ticketModel.updateTicket(
+                info.withHistory(old.getPreviousState(), old.getReviewers(), old.getWaitingSince()));
     }
 
     /**
@@ -664,6 +708,25 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         IntellijNotifications.error(this.project, message, exception);
     }
 
+    private void showError(String message, Throwable exception, Runnable retry) {
+        IntellijNotifications.error(this.project, message, exception, retry);
+    }
+
+    /**
+     * Returns true iff the remarks of the shown ticket could be loaded. If not (e.g. YouTrack was not
+     * reachable), the remarks must not be changed, because saving them would overwrite the remarks in
+     * the ticket. In this case, a warning is shown.
+     */
+    private boolean checkRemarksLoaded() {
+        if (this.remarksLoaded) {
+            return true;
+        }
+        IntellijNotifications.warn(this.project, "The review remarks of " + this.currentTicketKey
+                + " have not been loaded (yet), so they cannot be changed - saving would overwrite the remarks in"
+                + " the ticket. Reload the ticket when YouTrack is reachable again.");
+        return false;
+    }
+
     private void updateTicketTableEmptyText() {
         final boolean configured = !ReviewToolSettings.getInstance(this.project).getState().youtrackUrl.isEmpty();
         this.ticketTable.getEmptyText().clear();
@@ -714,7 +777,8 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                         ReviewToolPanel.this.addUnfinishedTicket(connector, generation);
                     });
                 } catch (final RuntimeException e) {
-                    ReviewToolPanel.this.showError("Could not load tickets from YouTrack", e);
+                    ReviewToolPanel.this.showError("Could not load tickets from YouTrack", e,
+                            ReviewToolPanel.this::refreshTickets);
                 }
             }
         }.queue();
@@ -799,8 +863,51 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         }
         if (answer == Messages.YES) {
             this.saveRemarks();
+        } else {
+            this.deleteUnsavedRemarksBackup(this.currentTicketKey);
         }
         return true;
+    }
+
+    /**
+     * Offers to restore remarks that were changed in an earlier session but not saved to the ticket.
+     */
+    private void offerUnsavedRemarks(String key, String loadedRemarks) {
+        final PropertiesComponent properties = PropertiesComponent.getInstance(this.project);
+        final String backup = properties.getValue(UNSAVED_REMARKS_PREFIX + key);
+        if (backup == null) {
+            return;
+        }
+        if (backup.equals(loadedRemarks)) {
+            this.deleteUnsavedRemarksBackup(key);
+            return;
+        }
+        if (!this.unsavedRemarksOffered.add(key)) {
+            // already offered (e.g. when the ticket was selected before the review was started)
+            return;
+        }
+        final String base = properties.getValue(UNSAVED_REMARKS_PREFIX + key + UNSAVED_REMARKS_BASE_SUFFIX);
+        final boolean ticketChanged = base != null && !base.equals(loadedRemarks);
+        IntellijNotifications.info(this.project, "There are changes to the review remarks of " + key
+                + " that have not been saved to the ticket (e.g. because YouTrack was not reachable)."
+                + (ticketChanged
+                    ? " Caution: the remarks in the ticket have been changed since then. Restoring replaces them"
+                        + " (until they are saved, reloading the ticket brings its remarks back)."
+                    : ""),
+                "Restore them", () -> {
+                    if (key.equals(this.currentTicketKey) && this.remarksLoaded) {
+                        this.setRemarksTextFromModel(backup);
+                        this.remarksModel.reload();
+                        this.rightTabs.setSelectedIndex(TAB_REMARKS);
+                    }
+                },
+                "Discard them", () -> this.deleteUnsavedRemarksBackup(key));
+    }
+
+    private void deleteUnsavedRemarksBackup(String key) {
+        final PropertiesComponent properties = PropertiesComponent.getInstance(this.project);
+        properties.unsetValue(UNSAVED_REMARKS_PREFIX + key);
+        properties.unsetValue(UNSAVED_REMARKS_PREFIX + key + UNSAVED_REMARKS_BASE_SUFFIX);
     }
 
     /**
@@ -813,10 +920,16 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         final int request = this.detailsRequest.incrementAndGet();
         this.currentTicketKey = key;
         this.currentTicketInfo = null;
+        this.discardToursOfOtherTicket(key);
         this.updateCurrentTicketLabel();
         this.ticketTable.repaint();
         this.setRemarksText("");
         this.remarksArea.getEmptyText().setText("Loading review remarks of " + key + "...");
+        this.remarksLoaded = false;
+        this.ticketLoadFailed = false;
+        this.remarksArea.setEditable(false);
+        // the remarks tree and markers of the previous ticket must not be shown for the new one
+        this.remarksModel.reload();
         this.treeModel.setRoot(new DefaultMutableTreeNode("Loading changes of " + key + "..."));
         new Task.Backgroundable(this.project, "Loading details for " + key, true) {
             @Override
@@ -854,18 +967,30 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                     return;
                 }
                 this.remarksArea.getEmptyText().setText("No review remarks yet");
+                this.remarksLoaded = true;
+                this.remarksArea.setEditable(true);
                 this.currentTicketInfo = info;
                 this.currentRound = finalRound;
                 this.updateCurrentTicketLabel();
                 this.ensureCurrentTicketListed();
+                this.updateRowKeepingHistory(info);
                 this.remarksModel.setRoundInfo(finalRound, finalReviewer);
                 this.setRemarksText(remarks);
+                this.offerUnsavedRemarks(key, remarks);
                 // show the remarks of the ticket in the editors right away
                 this.remarkMarkersShown = true;
                 this.remarksModel.reload();
             });
         } catch (final RuntimeException e) {
-            this.showError("Could not load review remarks for " + key, e);
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (this.isCurrentRequest(request)) {
+                    this.remarksArea.getEmptyText().setText("The review remarks of " + key
+                            + " could not be loaded - use \"Reload Remarks and Changes of the Ticket\"");
+                    this.ticketLoadFailed = true;
+                    this.updateCurrentTicketLabel();
+                }
+            });
+            this.showError("Could not load review remarks for " + key, e, () -> this.retryLoad(key));
         }
     }
 
@@ -907,11 +1032,14 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                     dateFormat.format(commit.getTime()) + "  " + firstLine);
             final Set<String> seenPaths = new LinkedHashSet<>();
             for (final IChange change : commit.getChanges()) {
-                final String path = change.getTo().getPath();
+                final IRevisionedFile file =
+                        change.getType() == FileChangeType.DELETED ? change.getFrom() : change.getTo();
+                final String path = file.getPath();
                 if (seenPaths.add(path)) {
                     commitNode.add(new DefaultMutableTreeNode(new FileNode(
                             path,
-                            change.getTo().toLocalPath(change.getWorkingCopy()))));
+                            file.toLocalPath(change.getWorkingCopy()),
+                            change.getType())));
                 }
             }
             root.add(commitNode);
@@ -962,7 +1090,8 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                     }
                     ApplicationManager.getApplication().invokeLater(() -> ReviewToolPanel.this.workStarted(key, review));
                 } catch (final RuntimeException e) {
-                    ReviewToolPanel.this.showError("Could not change state of " + key, e);
+                    ReviewToolPanel.this.showError("Could not start working on " + key, e,
+                            ReviewToolPanel.this::startWorkOnSelectedTicket);
                 }
             }
         }.queue();
@@ -977,6 +1106,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         IntellijNotifications.info(this.project, (review ? "Review of " : "Fixing of ") + key + " started."
                 + " The ticket list is hidden while you work on the ticket.");
         this.workingOnKey = key;
+        this.parkedWorkingTours = null;
         PropertiesComponent.getInstance(this.project).setValue(
                 UNFINISHED_TICKET_KEY, this.modeBox.getSelectedItem() + ":" + key);
         this.setTicketListVisible(false);
@@ -992,6 +1122,17 @@ public class ReviewToolPanel extends JPanel implements Disposable {
             });
         }
         this.refreshTickets();
+    }
+
+    /**
+     * While reviewing: when the last relevant stop has been viewed, offers to end the review.
+     */
+    private void allStopsVisited() {
+        if (!this.isFixingMode() && this.hasTicket() && this.currentTicketKey.equals(this.workingOnKey)
+                && this.currentTicketKey.equals(this.toursKey)) {
+            IntellijNotifications.info(this.project, "All relevant stops of " + this.currentTicketKey
+                    + " have been viewed.", "End review...", this::endReviewOrFixing);
+        }
     }
 
     /**
@@ -1021,13 +1162,53 @@ public class ReviewToolPanel extends JPanel implements Disposable {
             this.refreshCurrentTicketInfo();
         }
         this.workingOnKey = null;
+        this.parkedWorkingTours = null;
         this.setTicketListVisible(true);
         this.updateModeBoxEnabled();
         this.updateCurrentTicketLabel();
     }
 
+    /**
+     * Removes the tours (and the summary and the stop markers) if they belong to another ticket than
+     * the given one, so that the tabs and the editor always show the data of the shown ticket.
+     */
+    private void discardToursOfOtherTicket(String key) {
+        if (this.toursPanel.hasTours() && !key.equals(this.toursKey)) {
+            if (this.toursKey != null && this.toursKey.equals(this.workingOnKey)) {
+                // only a look at another ticket: the tours (and the progress) of the review must not get lost
+                this.parkedWorkingTours = this.toursPanel.getTours();
+            }
+            this.toursKey = null;
+            this.toursPanel.setTours(null);
+            this.summaryPanel.setTours(null);
+        }
+        if (this.parkedWorkingTours != null && key.equals(this.workingOnKey)) {
+            this.toursKey = key;
+            this.toursPanel.setTours(this.parkedWorkingTours);
+            this.summaryPanel.setTours(this.parkedWorkingTours);
+            this.parkedWorkingTours = null;
+        }
+    }
+
+    /**
+     * Loads the details of the given ticket again (after an error), if it is still the shown ticket.
+     */
+    private void retryLoad(String key) {
+        if (key.equals(this.currentTicketKey)) {
+            this.loadDetails(key, null);
+        }
+    }
+
     private void endReviewOrFixing() {
         if (!this.hasTicket()) {
+            return;
+        }
+        if (this.workingOnKey != null && !this.workingOnKey.equals(this.currentTicketKey)) {
+            // another ticket is only shown: ending "its" review would end a review that has not been started
+            this.offerToShowWorkingTicket();
+            return;
+        }
+        if (!this.checkRemarksLoaded()) {
             return;
         }
         this.remarksModel.reload();
@@ -1042,6 +1223,24 @@ public class ReviewToolPanel extends JPanel implements Disposable {
             this.endFixing(this.currentTicketKey);
         } else {
             this.endReview(this.currentTicketKey);
+        }
+    }
+
+    /**
+     * Explains that the review/fixing of another ticket than the shown one is running and offers to
+     * show that ticket (so that its review/fixing can be ended).
+     */
+    private void offerToShowWorkingTicket() {
+        final String working = this.workingOnKey;
+        final String what = this.isFixingMode() ? "fixing" : "review";
+        final int answer = Messages.showYesNoDialog(this.project,
+                "The " + what + " of " + working + " is in progress, " + this.currentTicketKey
+                        + " is only shown. Show " + working + " to end its " + what + "?",
+                this.isFixingMode() ? "End Fixing" : "End Review",
+                "Show " + working, "Cancel", Messages.getQuestionIcon());
+        if (answer == Messages.YES && this.confirmDiscardUnsavedRemarks()) {
+            this.selectTicketSilently(working);
+            this.loadDetails(working, null);
         }
     }
 
@@ -1113,7 +1312,8 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                     });
                     ReviewToolPanel.this.refreshTickets();
                 } catch (final RuntimeException e) {
-                    ReviewToolPanel.this.showError("Could not end review for " + key, e);
+                    ReviewToolPanel.this.showError("Could not end review for " + key + " (the remarks are kept)", e,
+                            ReviewToolPanel.this::endReviewOrFixing);
                 }
             }
         }.queue();
@@ -1154,7 +1354,8 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                     });
                     ReviewToolPanel.this.refreshTickets();
                 } catch (final RuntimeException e) {
-                    ReviewToolPanel.this.showError("Could not end fixing for " + key, e);
+                    ReviewToolPanel.this.showError("Could not end fixing for " + key + " (the remarks are kept)", e,
+                            ReviewToolPanel.this::endReviewOrFixing);
                 }
             }
         }.queue();
@@ -1180,7 +1381,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
      * Saves the review remarks of the current ticket to the ticket system.
      */
     private void saveRemarks() {
-        if (!this.hasTicket()) {
+        if (!this.hasTicket() || !this.checkRemarksLoaded()) {
             return;
         }
         final String key = this.currentTicketKey;
@@ -1195,13 +1396,16 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                         IntellijNotifications.info(ReviewToolPanel.this.project, "Review remarks saved to " + key + ".");
                     });
                 } catch (final RuntimeException e) {
-                    ReviewToolPanel.this.showError("Could not save review remarks for " + key, e);
+                    ReviewToolPanel.this.showError("Could not save review remarks for " + key, e,
+                            ReviewToolPanel.this::saveRemarks);
                 }
             }
         }.queue();
     }
 
     private void remarksSaved(String key, String savedText) {
+        // the backup is obsolete; if there are still unsaved changes, setRemarksDirty creates it anew
+        this.deleteUnsavedRemarksBackup(key);
         if (!key.equals(this.currentTicketKey)) {
             return;
         }
@@ -1238,6 +1442,14 @@ public class ReviewToolPanel extends JPanel implements Disposable {
 
     private void setRemarksDirty(boolean dirty) {
         this.remarksDirty = dirty && this.hasTicket();
+        if (this.remarksDirty) {
+            // a backup, so that the changes are not lost if they cannot be saved (e.g. YouTrack is not
+            //  reachable) and the IDE is closed
+            final PropertiesComponent properties = PropertiesComponent.getInstance(this.project);
+            properties.setValue(UNSAVED_REMARKS_PREFIX + this.currentTicketKey, this.remarksArea.getText());
+            properties.setValue(UNSAVED_REMARKS_PREFIX + this.currentTicketKey + UNSAVED_REMARKS_BASE_SUFFIX,
+                    this.savedRemarks);
+        }
         this.unsavedLabel.setText(this.remarksDirty
                 ? "Unsaved changes - not yet saved to " + this.currentTicketKey
                     + " (use \"Save Remarks to Ticket\" or end the review/fixing)"
@@ -1293,6 +1505,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                         return;
                     }
                     ApplicationManager.getApplication().invokeLater(() -> {
+                        ReviewToolPanel.this.toursKey = key;
                         ReviewToolPanel.this.toursPanel.setTours(tours);
                         ReviewToolPanel.this.summaryPanel.setTours(tours);
                         ReviewToolPanel.this.rightTabs.setSelectedIndex(TAB_TOURS);
@@ -1358,12 +1571,17 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                         ReviewToolPanel.this.lastLoadedKey = NO_TICKET_KEY;
                         ReviewToolPanel.this.currentTicketKey = NO_TICKET_KEY;
                         ReviewToolPanel.this.currentTicketInfo = null;
+                        // the tours of earlier selected commits do not fit the new selection
+                        ReviewToolPanel.this.toursKey = null;
+                        ReviewToolPanel.this.discardToursOfOtherTicket(NO_TICKET_KEY);
                         ReviewToolPanel.this.updateCurrentTicketLabel();
                         ReviewToolPanel.this.selectTicketSilently(null);
                         ReviewToolPanel.this.treeModel.setRoot(newRoot);
                         TreeUtil.expandAll(ReviewToolPanel.this.commitTree);
                         ReviewToolPanel.this.remarksModel.setRoundInfo(1, null);
                         ReviewToolPanel.this.setRemarksText("");
+                        ReviewToolPanel.this.remarksLoaded = true;
+                        ReviewToolPanel.this.remarksArea.setEditable(true);
                         ReviewToolPanel.this.remarksArea.getEmptyText().setText(
                                 "Reviewing selected commits without a ticket - remarks are not stored in a ticket");
                         ReviewToolPanel.this.remarksModel.reload();
@@ -1437,19 +1655,43 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     }
 
     /**
-     * Adds a new review remark at the caret position of the currently active editor. Without an
-     * editor, a global remark can be added.
+     * Adds a new review remark at the caret position of the currently active editor. When a stop is
+     * selected in the "Tours" tab and the editor does not show the stop's file, the remark refers
+     * to the stop. Without an editor and a selected stop, a global remark can be added.
      */
     public void addRemarkAtCursor() {
         final Editor editor = FileEditorManager.getInstance(this.project).getSelectedTextEditor();
+        final VirtualFile file = editor == null ? null : FileDocumentManager.getInstance().getFile(editor.getDocument());
+        final Stop stop = this.rightTabs.getSelectedIndex() == TAB_TOURS ? this.toursPanel.getSelectedStop() : null;
+        if (stop != null) {
+            final VirtualFile stopFile = IntellijFileResolver.findByAbsoluteFile(stop.getAbsoluteFile());
+            if (stopFile != null && !stopFile.equals(file)) {
+                this.addRemarkForStop(stop);
+                return;
+            }
+        }
         if (editor == null) {
             this.addRemarkAt(null, 0, "");
             return;
         }
-        final VirtualFile file = FileDocumentManager.getInstance().getFile(editor.getDocument());
         final int line = editor.getCaretModel().getLogicalPosition().line + 1;
         final String selected = editor.getSelectionModel().getSelectedText();
         this.addRemarkAt(file, line, selected == null ? "" : selected);
+    }
+
+    /**
+     * Adds a new review remark for the given stop (at the first line of its change, or for its file
+     * if the exact position is unknown).
+     */
+    void addRemarkForStop(Stop stop) {
+        final VirtualFile file = IntellijFileResolver.findByAbsoluteFile(stop.getAbsoluteFile());
+        if (file == null) {
+            IntellijNotifications.warn(this.project,
+                    "The file " + stop.getAbsoluteFile() + " does not exist in the working copy (anymore).");
+            return;
+        }
+        final int line = stop.isDetailedFragmentKnown() ? stop.getMostRecentFragment().getFrom().getLine() : 0;
+        this.addRemarkAt(file, line, "");
     }
 
     /**
@@ -1462,6 +1704,9 @@ public class ReviewToolPanel extends JPanel implements Disposable {
      * @param prefillText The text the remark is prefilled with (e.g. the selected text).
      */
     public void addRemarkAt(VirtualFile file, int line, String prefillText) {
+        if (this.hasTicket() && !this.checkRemarksLoaded()) {
+            return;
+        }
         this.remarksModel.reload();
         if (this.remarksModel.getParseError() != null) {
             this.rightTabs.setSelectedIndex(TAB_REMARKS);
@@ -1572,7 +1817,16 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                 final FileNode fileNode = (FileNode) userObject;
                 final String name = fileNode.localFile.getName();
                 this.setIcon(FileTypeManager.getInstance().getFileTypeByFileName(name).getIcon());
-                this.append(name);
+                // colored like in IntelliJ's VCS views, and named for those who cannot tell the colors apart
+                final FileStatus status = fileNode.type == FileChangeType.ADDED ? FileStatus.ADDED
+                        : fileNode.type == FileChangeType.DELETED ? FileStatus.DELETED : FileStatus.MODIFIED;
+                this.append(name, new SimpleTextAttributes(fileNode.type == FileChangeType.DELETED
+                        ? SimpleTextAttributes.STYLE_STRIKEOUT : SimpleTextAttributes.STYLE_PLAIN, status.getColor()));
+                if (fileNode.type == FileChangeType.ADDED) {
+                    this.append("  new", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
+                } else if (fileNode.type == FileChangeType.DELETED) {
+                    this.append("  deleted", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
+                }
                 final String parent = fileNode.label.length() > name.length()
                         ? fileNode.label.substring(0, fileNode.label.length() - name.length()) : "";
                 if (!parent.isEmpty()) {
