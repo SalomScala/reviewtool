@@ -25,13 +25,46 @@ import de.setsoftware.reviewtool.model.changestructure.ToursInReview.UserSelecte
  * (the "tour ordering" step) when there is more than one possibility and otherwise picks the only
  * available structure. It also lets the user pick which of the automatically detected change
  * classifications should be treated as irrelevant for the review. All commits are always kept.
+ * The choices are recorded (so that they can be saved with the review progress), and choices made
+ * earlier can be given, so that the same tours are created again without asking the user.
  */
 public final class IntellijCreateToursUi implements ICreateToursUi {
 
     private final Project project;
+    private final String presetTourStructure;
+    private final Set<String> presetIrrelevant;
+    private String chosenTourStructure;
+    private Set<String> chosenIrrelevant;
 
     public IntellijCreateToursUi(Project project) {
+        this(project, null, null);
+    }
+
+    /**
+     * Creates a UI that uses the given choices instead of asking the user (if they are not null and
+     * still possible).
+     *
+     * @param presetTourStructure The name of the tour structure to choose.
+     * @param presetIrrelevant The names of the classifications to mark as irrelevant.
+     */
+    public IntellijCreateToursUi(Project project, String presetTourStructure, Set<String> presetIrrelevant) {
         this.project = project;
+        this.presetTourStructure = presetTourStructure;
+        this.presetIrrelevant = presetIrrelevant;
+    }
+
+    /**
+     * Returns the name of the tour structure that has been chosen (null if none has been chosen yet).
+     */
+    public String getChosenTourStructure() {
+        return this.chosenTourStructure;
+    }
+
+    /**
+     * Returns the names of the classifications that have been marked as irrelevant (null if not chosen yet).
+     */
+    public Set<String> getChosenIrrelevant() {
+        return this.chosenIrrelevant;
     }
 
     @Override
@@ -41,7 +74,16 @@ public final class IntellijCreateToursUi implements ICreateToursUi {
             return Collections.emptyList();
         }
         if (choices.size() == 1) {
+            this.chosenTourStructure = choices.get(0).getFirst();
             return choices.get(0).getSecond();
+        }
+        if (this.presetTourStructure != null) {
+            for (final Pair<String, List<? extends Tour>> choice : choices) {
+                if (choice.getFirst().equals(this.presetTourStructure)) {
+                    this.chosenTourStructure = choice.getFirst();
+                    return choice.getSecond();
+                }
+            }
         }
 
         final List<String> options = new ArrayList<>();
@@ -64,6 +106,7 @@ public final class IntellijCreateToursUi implements ICreateToursUi {
         if (selected.get() < 0) {
             return null;
         }
+        this.chosenTourStructure = choices.get(selected.get()).getFirst();
         return choices.get(selected.get()).getSecond();
     }
 
@@ -74,9 +117,21 @@ public final class IntellijCreateToursUi implements ICreateToursUi {
             List<ReviewRoundInfo> reviewRounds) {
         final List<IClassification> classifications = new ArrayList<>(strategyResults.keySet());
         if (classifications.isEmpty()) {
+            this.chosenIrrelevant = Collections.emptySet();
             return new UserSelectedReductions(
                     new ArrayList<>(changes),
                     Collections.<IClassification>emptySet());
+        }
+
+        if (this.presetIrrelevant != null) {
+            final Set<IClassification> irrelevant = new LinkedHashSet<>();
+            for (final IClassification c : classifications) {
+                if (this.presetIrrelevant.contains(c.getName())) {
+                    irrelevant.add(c);
+                }
+            }
+            this.chosenIrrelevant = names(irrelevant);
+            return new UserSelectedReductions(new ArrayList<>(changes), irrelevant);
         }
 
         final List<Integer> counts = new ArrayList<>();
@@ -96,7 +151,16 @@ public final class IntellijCreateToursUi implements ICreateToursUi {
             //the user cancelled
             return null;
         }
+        this.chosenIrrelevant = names(irrelevant.get());
         return new UserSelectedReductions(new ArrayList<>(changes), irrelevant.get());
+    }
+
+    private static Set<String> names(Set<IClassification> classifications) {
+        final Set<String> ret = new LinkedHashSet<>();
+        for (final IClassification c : classifications) {
+            ret.add(c.getName());
+        }
+        return ret;
     }
 
 }

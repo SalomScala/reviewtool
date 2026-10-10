@@ -74,4 +74,22 @@ public class StopDiffExcerptTest {
         assertNull(StopDiffExcerpt.create(OLD, NEW, CHANGES, 4, 6, 2));
     }
 
+    @Test
+    public void testOldLinesAreMappedToTheNewText() {
+        // old lines 2-3 are replaced by new line 2, old line 6 is deleted
+        final List<StopDiffExcerpt.Change> changes = Arrays.asList(
+                new StopDiffExcerpt.Change(2, 4, 2, 3),
+                new StopDiffExcerpt.Change(6, 7, 5, 5));
+        assertEquals(0, StopDiffExcerpt.oldToNewLine(changes, 0));
+        assertEquals(1, StopDiffExcerpt.oldToNewLine(changes, 1));
+        assertEquals(2, StopDiffExcerpt.oldToNewLine(changes, 2));
+        assertEquals("a changed line beyond the replacement goes to its last line",
+                2, StopDiffExcerpt.oldToNewLine(changes, 3));
+        assertEquals(3, StopDiffExcerpt.oldToNewLine(changes, 4));
+        assertEquals(4, StopDiffExcerpt.oldToNewLine(changes, 5));
+        assertEquals("a deleted line goes to where it was deleted", 5, StopDiffExcerpt.oldToNewLine(changes, 6));
+        assertEquals(5, StopDiffExcerpt.oldToNewLine(changes, 7));
+        assertEquals(6, StopDiffExcerpt.oldToNewLine(changes, 8));
+    }
+
 }
