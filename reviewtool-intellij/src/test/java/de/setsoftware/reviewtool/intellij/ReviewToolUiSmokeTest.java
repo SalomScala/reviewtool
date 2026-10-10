@@ -225,6 +225,36 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
         final ReviewToolPanel panel = new ReviewToolPanel(this.getProject());
         Disposer.register(this.getTestRootDisposable(), panel);
         renderToPng(panel, "toolwindow", 1500, 500);
+        // the ticket list can be hidden (it is hidden automatically while working on a ticket)
+        assertTrue(panel.isTicketListVisible());
+        panel.setTicketListVisible(false);
+        assertFalse(panel.isTicketListVisible());
+        panel.setTicketListVisible(true);
+        // without YouTrack settings, a settings change does not try to load tickets
+        panel.settingsChanged();
+    }
+
+    public void testFilesAreResolvedInTheBackground() {
+        this.myFixture.addFileToProject("pkg/Resolved.java", "package pkg;\nclass Resolved {}\n");
+        final java.util.concurrent.atomic.AtomicReference<java.util.Map<String, com.intellij.openapi.vfs.VirtualFile>>
+                result = new java.util.concurrent.atomic.AtomicReference<>();
+        IntellijFileResolver.findByShortNamesAsync(this.getProject(),
+                java.util.Arrays.asList("Resolved.java", "Missing.java"), result::set);
+        com.intellij.testFramework.PlatformTestUtil.waitWithEventsDispatching(
+                "the files were not resolved", () -> result.get() != null, 20);
+        assertEquals("Resolved.java", result.get().get("Resolved.java").getName());
+        assertFalse(result.get().containsKey("Missing.java"));
+    }
+
+    public void testNavigationDescriptorUsesTheLineStart() {
+        final com.intellij.psi.PsiFile file =
+                this.myFixture.addFileToProject("Lines.java", "class Lines {\n    int a;\n    int b;\n}\n");
+        final com.intellij.openapi.vfs.VirtualFile vf = file.getVirtualFile();
+        assertEquals("class Lines {\n".length(),
+                IntellijFileResolver.descriptorForLine(this.getProject(), vf, 1).getOffset());
+        // lines outside the file are clamped
+        assertEquals(0, IntellijFileResolver.descriptorForLine(this.getProject(), vf, -5).getOffset());
+        assertTrue(IntellijFileResolver.descriptorForLine(this.getProject(), vf, 100).getOffset() > 0);
     }
 
     public void testToursFromGitChanges() throws Exception {
@@ -266,8 +296,12 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
                 }
             }
             final Stop firstStop = tours.getTopmostTours().get(0).getStops().get(0);
+            final int notVisited = panel.countRelevantStopsNotFullyVisited();
+            assertTrue(notVisited > 0);
             panel.toggleChecked(firstStop);
             assertSame(StopIcons.checkMark(), panel.icons().forStop(firstStop));
+            // checked stops do not count as "not visited" when the review is ended
+            assertEquals(notVisited - 1, panel.countRelevantStopsNotFullyVisited());
             panel.toggleChecked(firstStop);
 
             panel.navigate(1);
@@ -390,6 +424,18 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
             refactorings.add(r.toString());
         }
         assertTrue(refactorings.toString(), refactorings.contains("Rename class: demo.Calculator -> demo.Computer"));
+        // the refactorings know where the new declaration is (for the navigation from the summary)
+        for (final RefactoringDetector.Refactoring r : summary.getRefactorings()) {
+            assertTrue(r.getAfterPath(), r.getAfterPath().endsWith("Computer.java"));
+            assertTrue(r.toString(), r.getAfterLine() > 0);
+        }
+        // a change within a line (Calculator -> Computer, multiply -> times) counts as one changed line
+        for (final ChangeSummaryGenerator.FileItem file : summary.getFiles()) {
+            if (file.getPath().endsWith("Main.java")) {
+                assertEquals(1, file.getAdded());
+                assertEquals(1, file.getRemoved());
+            }
+        }
         assertTrue(refactorings.toString(),
                 refactorings.contains("Rename method: Calculator.multiply(int, int) -> Computer.times(int, int)"));
         assertTrue(refactorings.toString(),

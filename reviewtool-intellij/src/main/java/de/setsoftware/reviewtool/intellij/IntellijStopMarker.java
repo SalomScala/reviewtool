@@ -1,6 +1,5 @@
 package de.setsoftware.reviewtool.intellij;
 
-import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.vfs.VirtualFile;
 
 import de.setsoftware.reviewtool.intellij.IntellijMarkerFactory.MarkerHandle;
@@ -40,11 +39,10 @@ public final class IntellijStopMarker implements IStopMarker {
         if (this.file == null) {
             return;
         }
-        IntellijMarkerFactory.runOnEdt(() -> new OpenFileDescriptor(
+        IntellijMarkerFactory.runOnEdt(() -> IntellijFileResolver.descriptorForLine(
                 this.factory.getProject(),
                 this.file,
-                Math.max(0, this.fromLine - 1),
-                0).navigate(true));
+                this.fromLine - 1).navigate(true));
     }
 
     @Override

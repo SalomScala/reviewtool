@@ -11,6 +11,7 @@ import javax.swing.JComponent;
 import javax.swing.JPanel;
 import javax.swing.JRadioButton;
 
+import com.intellij.icons.AllIcons;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.ui.components.JBLabel;
@@ -34,6 +35,7 @@ final class EndReviewDialog extends DialogWrapper {
     private final List<JRadioButton> radioButtons = new ArrayList<>();
     private final JBTextArea remarksArea = new JBTextArea(15, 60);
     private final String summary;
+    private final String warning;
 
     /**
      * Creates the dialog.
@@ -41,12 +43,15 @@ final class EndReviewDialog extends DialogWrapper {
      * @param remarks The current review remarks.
      * @param preferredType The type of transition that should be preselected.
      * @param summary A short summary of the remarks (e.g. "2 remarks need fixing"), shown above the options.
+     * @param warning A warning shown prominently above the options (e.g. about stops that have not been
+     *      visited), or null.
      */
     EndReviewDialog(Project project, String ticketKey, List<EndTransition> transitions, String remarks,
-            EndTransition.Type preferredType, String summary) {
+            EndTransition.Type preferredType, String summary, String warning) {
         super(project);
         this.transitions = transitions;
         this.summary = summary;
+        this.warning = warning;
         this.setTitle("End Review - " + ticketKey);
         this.setOKButtonText("End Review");
         this.remarksArea.setText(remarks);
@@ -104,7 +109,16 @@ final class EndReviewDialog extends DialogWrapper {
         for (final JRadioButton button : this.radioButtons) {
             options.add(button);
         }
-        panel.add(options, BorderLayout.SOUTH);
+        if (this.warning != null) {
+            final JBLabel warningLabel = new JBLabel(this.warning, AllIcons.General.Warning, JBLabel.LEADING);
+            warningLabel.setBorder(JBUI.Borders.emptyBottom(4));
+            final JPanel south = new JPanel(new BorderLayout());
+            south.add(warningLabel, BorderLayout.NORTH);
+            south.add(options, BorderLayout.CENTER);
+            panel.add(south, BorderLayout.SOUTH);
+        } else {
+            panel.add(options, BorderLayout.SOUTH);
+        }
         return panel;
     }
 

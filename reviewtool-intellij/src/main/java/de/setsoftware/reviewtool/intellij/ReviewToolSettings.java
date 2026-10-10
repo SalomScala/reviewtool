@@ -3,6 +3,7 @@ package de.setsoftware.reviewtool.intellij;
 import com.intellij.credentialStore.CredentialAttributes;
 import com.intellij.credentialStore.CredentialAttributesKt;
 import com.intellij.ide.passwordSafe.PasswordSafe;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.PersistentStateComponent;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.components.State;
@@ -43,6 +44,8 @@ public final class ReviewToolSettings implements PersistentStateComponent<Review
             new CredentialAttributes(CredentialAttributesKt.generateServiceName("CoRT", "YouTrack"));
 
     private SettingsState state = new SettingsState();
+    /** The token as last read from or written to the password safe (null = not read yet). */
+    private volatile String cachedToken;
 
     public static ReviewToolSettings getInstance(Project project) {
         return project.getService(ReviewToolSettings.class);
@@ -58,13 +61,34 @@ public final class ReviewToolSettings implements PersistentStateComponent<Review
         this.state = state;
     }
 
+    /**
+     * Returns the YouTrack token. The first call reads it from the password safe, which can be slow
+     * and therefore should not happen on the EDT (see {@link #getYoutrackTokenIfLoaded()}).
+     */
     public String getYoutrackToken() {
-        final String token = PasswordSafe.getInstance().getPassword(TOKEN_ATTRIBUTES);
-        return token == null ? "" : token;
+        String token = this.cachedToken;
+        if (token == null) {
+            final String stored = PasswordSafe.getInstance().getPassword(TOKEN_ATTRIBUTES);
+            token = stored == null ? "" : stored;
+            this.cachedToken = token;
+        }
+        return token;
     }
 
+    /**
+     * Returns the token if it has already been read from the password safe, otherwise null.
+     */
+    public String getYoutrackTokenIfLoaded() {
+        return this.cachedToken;
+    }
+
+    /**
+     * Sets the token; it is written to the password safe in the background.
+     */
     public void setYoutrackToken(String token) {
-        PasswordSafe.getInstance().setPassword(TOKEN_ATTRIBUTES, token);
+        this.cachedToken = token;
+        ApplicationManager.getApplication().executeOnPooledThread(
+                () -> PasswordSafe.getInstance().setPassword(TOKEN_ATTRIBUTES, token));
     }
 
 }

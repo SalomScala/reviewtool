@@ -58,11 +58,34 @@ final class RefactoringDetector {
         private final String type;
         private final String before;
         private final String after;
+        private final String afterPath;
+        private final int afterLine;
 
         Refactoring(String type, String before, String after) {
+            this(type, before, after, null, 0);
+        }
+
+        Refactoring(String type, String before, String after, String afterPath, int afterLine) {
             this.type = type;
             this.before = before;
             this.after = after;
+            this.afterPath = afterPath;
+            this.afterLine = afterLine;
+        }
+
+        /**
+         * The path of the file with the declaration after the refactoring (as given in the
+         * {@link FileVersions}), or null if unknown.
+         */
+        String getAfterPath() {
+            return this.afterPath;
+        }
+
+        /**
+         * The (1-based) line of the declaration after the refactoring, or 0 if unknown.
+         */
+        int getAfterLine() {
+            return this.afterLine;
         }
 
         String getType() {
@@ -128,14 +151,18 @@ final class RefactoringDetector {
         private final String simpleName;
         private final String parent;
         private final Map<String, Integer> tokens;
+        private final String path;
+        private final int line;
 
         TypeInfo(String qualifiedName, String packageName, String simpleName, String parent,
-                Map<String, Integer> tokens) {
+                Map<String, Integer> tokens, String path, int line) {
             this.qualifiedName = qualifiedName;
             this.packageName = packageName;
             this.simpleName = simpleName;
             this.parent = parent;
             this.tokens = tokens;
+            this.path = path;
+            this.line = line;
         }
     }
 
@@ -149,15 +176,19 @@ final class RefactoringDetector {
         private final Map<String, Integer> tokens;
         private final int tokenCount;
         private final Set<String> calledMethods;
+        private final String path;
+        private final int line;
 
         MethodInfo(String type, String name, String signature, Map<String, Integer> tokens,
-                Set<String> calledMethods) {
+                Set<String> calledMethods, String path, int line) {
             this.type = type;
             this.name = name;
             this.signature = signature;
             this.tokens = tokens;
             this.tokenCount = count(tokens);
             this.calledMethods = calledMethods;
+            this.path = path;
+            this.line = line;
         }
 
         String key() {
@@ -218,7 +249,7 @@ final class RefactoringDetector {
             final CompilationUnit cu = JavaParser.parse(content);
             final String pkg = cu.getPackageDeclaration().map((p) -> p.getNameAsString()).orElse("");
             for (final TypeDeclaration<?> type : cu.getTypes()) {
-                addType(pkg, pkg.isEmpty() ? "" : pkg + ".", null, type, model);
+                addType(path, pkg, pkg.isEmpty() ? "" : pkg + ".", null, type, model);
             }
         } catch (final RuntimeException e) {
             //a file with syntax errors is just ignored for the refactoring detection
@@ -226,13 +257,14 @@ final class RefactoringDetector {
         }
     }
 
-    private static void addType(String pkg, String prefix, String parent, TypeDeclaration<?> type, Model model) {
+    private static void addType(String path, String pkg, String prefix, String parent, TypeDeclaration<?> type,
+            Model model) {
         final String qualifiedName = prefix + type.getNameAsString();
         model.types.put(qualifiedName, new TypeInfo(
-                qualifiedName, pkg, type.getNameAsString(), parent, tokens(type)));
+                qualifiedName, pkg, type.getNameAsString(), parent, tokens(type), path, line(type.getName())));
         for (final BodyDeclaration<?> member : type.getMembers()) {
             if (member instanceof TypeDeclaration) {
-                addType(pkg, qualifiedName + ".", qualifiedName, (TypeDeclaration<?>) member, model);
+                addType(path, pkg, qualifiedName + ".", qualifiedName, (TypeDeclaration<?>) member, model);
             } else if (member instanceof MethodDeclaration || member instanceof ConstructorDeclaration) {
                 final CallableDeclaration<?> callable = (CallableDeclaration<?>) member;
                 final Node body = member instanceof MethodDeclaration
@@ -245,10 +277,15 @@ final class RefactoringDetector {
                     }
                 }
                 final MethodInfo info = new MethodInfo(qualifiedName, callable.getNameAsString(),
-                        signature(callable), body == null ? new HashMap<>() : tokens(body), called);
+                        signature(callable), body == null ? new HashMap<>() : tokens(body), called,
+                        path, line(callable.getName()));
                 model.methods.put(info.key(), info);
             }
         }
+    }
+
+    private static int line(Node node) {
+        return node.getBegin().map((p) -> p.line).orElse(0);
     }
 
     private static String signature(CallableDeclaration<?> callable) {
@@ -350,7 +387,7 @@ final class RefactoringDetector {
                     && Objects.equals(oldType.parent == null ? null : mapping.get(oldType.parent), best.parent);
             final boolean sameName = oldType.simpleName.equals(best.simpleName);
             final String kind = samePackage ? RENAME_CLASS : (sameName ? MOVE_CLASS : MOVE_AND_RENAME_CLASS);
-            ret.add(new Refactoring(kind, oldType.qualifiedName, best.qualifiedName));
+            ret.add(new Refactoring(kind, oldType.qualifiedName, best.qualifiedName, best.path, best.line));
         }
         return mapping;
     }
@@ -394,7 +431,8 @@ final class RefactoringDetector {
             }
             matchedOld.add(oldMethod.key());
             matchedNew.add(newMethod.key());
-            ret.add(new Refactoring((String) c[3], oldMethod.display(), newMethod.display()));
+            ret.add(new Refactoring((String) c[3], oldMethod.display(), newMethod.display(),
+                    newMethod.path, newMethod.line));
         }
     }
 
@@ -446,7 +484,8 @@ final class RefactoringDetector {
                     continue;
                 }
                 if (containment(added.tokens, difference(pair[0].tokens, pair[1].tokens)) >= EXTRACT_CONTAINMENT) {
-                    ret.add(new Refactoring(EXTRACT_METHOD, pair[0].display(), added.display()));
+                    ret.add(new Refactoring(EXTRACT_METHOD, pair[0].display(), added.display(),
+                            added.path, added.line));
                     break;
                 }
             }
@@ -460,7 +499,8 @@ final class RefactoringDetector {
                     continue;
                 }
                 if (containment(removed.tokens, difference(pair[1].tokens, pair[0].tokens)) >= EXTRACT_CONTAINMENT) {
-                    ret.add(new Refactoring(INLINE_METHOD, removed.display(), pair[1].display()));
+                    ret.add(new Refactoring(INLINE_METHOD, removed.display(), pair[1].display(),
+                            pair[1].path, pair[1].line));
                     break;
                 }
             }

@@ -5,6 +5,7 @@ import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.util.Collections;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
@@ -23,7 +24,6 @@ import com.intellij.icons.AllIcons;
 import com.intellij.openapi.actionSystem.ActionManager;
 import com.intellij.openapi.actionSystem.ActionToolbar;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
-import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.project.DumbAwareAction;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogBuilder;
@@ -393,14 +393,14 @@ public final class ReviewRemarksPanel extends JPanel {
             return;
         }
         final int line = position.getLine();
-        IntellijMarkerFactory.runOnEdt(() -> {
-            final VirtualFile vf = IntellijFileResolver.findByShortName(this.project, shortName);
+        IntellijFileResolver.findByShortNamesAsync(this.project, Collections.singleton(shortName), (files) -> {
+            final VirtualFile vf = files.get(shortName);
             if (vf == null) {
                 IntellijNotifications.warn(this.project,
                         "The file " + shortName + " of the remark could not be found in the project.");
                 return;
             }
-            new OpenFileDescriptor(this.project, vf, Math.max(0, line - 1), 0).navigate(true);
+            IntellijFileResolver.descriptorForLine(this.project, vf, line - 1).navigate(true);
         });
     }
 

@@ -59,6 +59,14 @@ final class TicketTableModel extends AbstractTableModel {
         }
     }
 
+    /**
+     * Adds a ticket at the end of the list (e.g. the ticket being worked on, after it has left the filter).
+     */
+    void addTicket(TicketInfo ticket) {
+        this.tickets.add(ticket);
+        this.fireTableRowsInserted(this.tickets.size() - 1, this.tickets.size() - 1);
+    }
+
     @Override
     public int getRowCount() {
         return this.tickets.size();
