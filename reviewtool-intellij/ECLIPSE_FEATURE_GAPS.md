@@ -181,6 +181,25 @@ Fünfte Runde (Wunschliste: Fortschritt über Neustarts, Anmerkungen im Diff, kl
   Jira-Connector der Eclipse-Version), und die Kürzel landen so auch im Anmerkungstext. Die fehlenden Dialogtitel
   im Test lagen am virtuellen Bildschirm ohne Fenstermanager; alle Dialoge setzen einen Titel.
 
+Sechste Runde (KI-Unterstützung, erste Ausbaustufe; ohne Eclipse-Pendant):
+
+- **Anbindung über opencode:** CoRT startet bei Bedarf ein lokales `opencode serve` im Projektverzeichnis (nur
+  127.0.0.1, zufälliges Passwort) und beendet es mit dem Projekt bzw. der IDE. Das Modell wird ausschließlich in der
+  opencode-Konfiguration gepflegt; CoRT wählt kein Modell und speichert keine API-Keys. Standardmäßig aus;
+  einschalten unter „AI Support (opencode)“, „Check opencode“ zeigt Version und konfiguriertes Modell.
+- **Schreibgeschützte Sitzungen:** Die opencode-Sitzung erlaubt nur Lesen/Suchen im Projekt (`read`, `grep`, `glob`,
+  `list`); alle anderen Werkzeuge (Bearbeiten, Shell, Web, …) werden gar nicht erst angeboten (im Test geprüft).
+- **Zusammenfassung als Einstieg** („Summarize Changes“ im neuen „AI“-Tab bzw. „Summarize with AI“ im Summary-Tab) und
+  **„Explain with AI“** für einen Stop (Kontextmenü im Tour-Baum oder „Explain Selected Stop“). Die Diffs aller Stops
+  werden einmal pro Review gesendet (Unified-Diff je Stop, nummeriert wie im Tour-Baum; sehr große Änderungen werden
+  gekürzt und das angezeigt), Folgefragen laufen in derselben Sitzung. „Stop 3“ in einer Antwort ist ein Link zum Stop.
+- Fehler (opencode nicht gefunden, Modell nicht erreichbar, fehlende Zugangsdaten des Anbieters, Abbruch) erscheinen
+  verständlich im „AI“-Tab, bei Konfigurationsproblemen mit Link zu den Einstellungen.
+- Nebenbei: „Open settings“ öffnet nur noch die CoRT-Seite. Der komplette Einstellungsdialog legte alle Seiten der
+  IDE im UI-Thread an, was IntelliJ als „Slow operation“-Fehler von CoRT meldete.
+- Geplant für die nächste Ausbaustufe: Vorschläge für Anmerkungen (übernehmen/verwerfen) und Risikohinweise je Stop.
+  Beides lässt sich mit den strukturierten Antworten von opencode (`format: json_schema`) umsetzen.
+
 ## Gefundene und behobene Fehler
 
 - **Unsichtbare Gutter-Icons** (zweite Runde, im Praxistest gefunden): Die Gutter-Icons der Stops und Anmerkungen
@@ -210,5 +229,8 @@ Fünfte Runde (Wunschliste: Fortschritt über Neustarts, Anmerkungen im Diff, kl
   gilt nur HTTP 404 als „nicht gefunden“, alle anderen Fehler werden gemeldet, und die Anmerkungen bleiben gesperrt,
   bis sie geladen werden konnten (Tests in `YouTrackConnectorTest`). Auch ein abgelehnter Statuswechsel wegen
   falschem Token/URL wird nicht mehr verschluckt.
+- **opencode nicht erreichbar aus der IDE** (sechste Runde, im Praxistest gefunden): Der Java-`HttpClient` nutzte den
+  Proxy-Selector der IDE; die Anfragen an den lokalen opencode-Server liefen dadurch ins Leere (Zeitüberschreitung),
+  obwohl derselbe Aufruf außerhalb der IDE sofort antwortete. Lokale Verbindungen gehen jetzt immer ohne Proxy.
 - **Falsche Aktions-ID im gepackten Plugin** (fünfte Runde, durch einen Test gefunden): Das gepackte plugin.xml
   benennt die Aktions-IDs um („…cortoriginal.…“). Code, der eine Aktion über ihre ID sucht, muss beide IDs kennen.

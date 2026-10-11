@@ -94,6 +94,7 @@ public final class ReviewSummaryPanel extends JPanel {
     private final Tree tree = new Tree(this.treeModel);
 
     private transient ToursInReview tours;
+    private transient Runnable aiSummaryListener;
 
     public ReviewSummaryPanel(Project project) {
         super(new BorderLayout());
@@ -106,6 +107,14 @@ public final class ReviewSummaryPanel extends JPanel {
         final JButton refreshButton = new JButton("Regenerate Summary");
         refreshButton.addActionListener((e) -> this.regenerate());
         toolbar.add(refreshButton);
+        final JButton aiButton = new JButton("Summarize with AI", AllIcons.Actions.Lightning);
+        aiButton.setToolTipText("Asks the AI model configured in opencode for an overview of the changes (\"AI\" tab)");
+        aiButton.addActionListener((e) -> {
+            if (this.aiSummaryListener != null) {
+                this.aiSummaryListener.run();
+            }
+        });
+        toolbar.add(aiButton);
         final JBLabel hint = new JBLabel("Double click opens the file or declaration");
         hint.setComponentStyle(UIUtil.ComponentStyle.SMALL);
         hint.setFontColor(UIUtil.FontColor.BRIGHTER);
@@ -132,6 +141,13 @@ public final class ReviewSummaryPanel extends JPanel {
             }
         });
         this.add(new JBScrollPane(this.tree), BorderLayout.CENTER);
+    }
+
+    /**
+     * Sets the action of the "Summarize with AI" button.
+     */
+    void setAiSummaryListener(Runnable listener) {
+        this.aiSummaryListener = listener;
     }
 
     /**

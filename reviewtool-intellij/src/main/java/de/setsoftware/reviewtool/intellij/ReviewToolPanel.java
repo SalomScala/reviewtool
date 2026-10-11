@@ -52,7 +52,6 @@ import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileTypes.FileTypeManager;
 import com.intellij.openapi.vcs.FileStatus;
 import com.intellij.openapi.ide.CopyPasteManager;
-import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.Task;
@@ -119,6 +118,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     private static final int TAB_CHANGES = 0;
     private static final int TAB_TOURS = 1;
     private static final int TAB_REMARKS = 2;
+    private static final int TAB_AI = 4;
     private static final String NO_TICKET_KEY = "Selected commits";
 
     /**
@@ -155,6 +155,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     private final IntellijMarkerFactory markerFactory;
     private final ReviewToursPanel toursPanel;
     private final ReviewSummaryPanel summaryPanel;
+    private final ReviewAiPanel aiPanel;
     private final ReviewRemarksModel remarksModel;
     private final ReviewRemarksPanel remarksPanel;
     private final AtomicInteger detailsRequest = new AtomicInteger();
@@ -209,12 +210,21 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         this.markerFactory = new IntellijMarkerFactory(project);
         this.toursPanel = new ReviewToursPanel(project, this.markerFactory);
         this.summaryPanel = new ReviewSummaryPanel(project);
+        this.summaryPanel.setAiSummaryListener(this::aiSummarize);
+        this.aiPanel = new ReviewAiPanel(project, () -> this.toursPanel.getTours(), this::reviewTitleForAi,
+                () -> this.toursPanel.getSelectedStop(),
+                (stop) -> {
+                    this.rightTabs.setSelectedIndex(TAB_TOURS);
+                    this.toursPanel.showStop(stop);
+                },
+                () -> ReviewToolConfigurable.show(project));
         this.remarksModel = new ReviewRemarksModel(
                 () -> this.remarksArea.getText(),
                 (text) -> this.setRemarksTextFromModel(text));
         this.remarksPanel = new ReviewRemarksPanel(project, this.remarksModel);
         this.toursPanel.setAllStopsVisitedListener(this::allStopsVisited);
         this.toursPanel.setAddRemarkListener(this::addRemarkForStop);
+        this.toursPanel.setExplainListener(this::aiExplain);
         this.toursPanel.setProgressListener(this::progressChanged);
         this.progressSaveTimer = new Timer(3000, (e) -> this.saveProgress(false));
         this.progressSaveTimer.setRepeats(false);
@@ -295,6 +305,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         this.rightTabs.addTab("Tours", this.toursPanel);
         this.rightTabs.addTab("Remarks", this.createRemarksTab());
         this.rightTabs.addTab("Summary", this.summaryPanel);
+        this.rightTabs.addTab("AI", this.aiPanel);
 
         this.currentTicketLabel.setBorder(JBUI.Borders.empty(4, 8));
         this.currentTicketLabel.setIconTextGap(JBUI.scale(6));
@@ -510,6 +521,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
      * Called when the settings have been changed: reloads the ticket list.
      */
     void settingsChanged() {
+        this.aiPanel.settingsChanged();
         this.updateTicketTableEmptyText();
         if (!ReviewToolSettings.getInstance(this.project).getState().youtrackUrl.isEmpty()) {
             this.refreshTickets();
@@ -564,7 +576,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         }));
         group.add(more);
         group.add(PanelActions.action("Settings", AllIcons.General.Settings, () -> true,
-                () -> ShowSettingsUtil.getInstance().showSettingsDialog(this.project, ReviewToolConfigurable.class)));
+                () -> ReviewToolConfigurable.show(this.project)));
         return group;
     }
 
@@ -760,7 +772,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
             this.ticketTable.getEmptyText().setText("YouTrack is not configured yet");
             this.ticketTable.getEmptyText().appendSecondaryText("Open settings",
                     SimpleTextAttributes.LINK_ATTRIBUTES, (e) -> {
-                        ShowSettingsUtil.getInstance().showSettingsDialog(this.project, ReviewToolConfigurable.class);
+                        ReviewToolConfigurable.show(this.project);
                         this.updateTicketTableEmptyText();
                     });
         }
@@ -1879,6 +1891,37 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         final int line = editor.getCaretModel().getLogicalPosition().line + 1;
         final String selected = editor.getSelectionModel().getSelectedText();
         this.addRemarkAt(file, line, selected == null ? "" : selected);
+    }
+
+    /**
+     * Shows the "AI" tab and asks the AI for a summary of the changes under review.
+     */
+    void aiSummarize() {
+        this.rightTabs.setSelectedIndex(TAB_AI);
+        this.aiPanel.summarize();
+    }
+
+    /**
+     * Shows the "AI" tab and asks the AI to explain the given stop.
+     */
+    void aiExplain(Stop stop) {
+        this.rightTabs.setSelectedIndex(TAB_AI);
+        this.aiPanel.explain(stop);
+    }
+
+    /**
+     * The title of the review for the AI: the ticket key and summary (or the selected commits).
+     */
+    private String reviewTitleForAi() {
+        final TicketInfo info = this.currentTicketInfo;
+        if (info != null && info.getId().equals(this.toursKey)) {
+            return info.getId() + " " + info.getSummary();
+        }
+        return this.toursKey == null ? "changes" : this.toursKey;
+    }
+
+    ReviewAiPanel getAiPanel() {
+        return this.aiPanel;
     }
 
     /**

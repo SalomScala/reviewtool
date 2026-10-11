@@ -38,6 +38,10 @@ public final class ReviewToolSettings implements PersistentStateComponent<Review
         public long maxTextDiffFileSizeThreshold = 1048576;
         /** The relation types for the stop ordering, see {@link StopOrderingSettings}; empty = defaults. */
         public String stopOrdering = "";
+        /** True iff the AI support (via a local opencode) is enabled; off by default (diffs are sent to a model). */
+        public boolean aiEnabled;
+        /** The opencode executable (a name on the PATH or an absolute path). */
+        public String opencodePath = "opencode";
     }
 
     private static final CredentialAttributes TOKEN_ATTRIBUTES =

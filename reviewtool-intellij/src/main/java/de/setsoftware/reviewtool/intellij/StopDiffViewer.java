@@ -67,9 +67,12 @@ final class StopDiffViewer {
         private final int line;
         private final List<StopDiffExcerpt.Change> changes;
         private final StopDiffExcerpt excerpt;
+        /** The stop's range of lines in the new text (0-based, end exclusive), or -1 if unknown. */
+        private final int stopStart;
+        private final int stopEnd;
 
         private StopDiffData(String fileName, String oldText, String newText, String oldTitle, String newTitle,
-                int line, List<StopDiffExcerpt.Change> changes, StopDiffExcerpt excerpt) {
+                int line, List<StopDiffExcerpt.Change> changes, int[] stopRange) {
             this.fileName = fileName;
             this.oldText = oldText;
             this.newText = newText;
@@ -77,7 +80,22 @@ final class StopDiffViewer {
             this.newTitle = newTitle;
             this.line = line;
             this.changes = changes;
-            this.excerpt = excerpt;
+            this.stopStart = stopRange == null ? -1 : stopRange[0];
+            this.stopEnd = stopRange == null ? -1 : stopRange[1];
+            this.excerpt = stopRange == null || changes == null ? null : StopDiffExcerpt.create(
+                    oldText, newText, changes, stopRange[0], stopRange[1], CONTEXT_LINES);
+        }
+
+        /**
+         * The stop's changes as a unified diff (all changes of the file if the stop's lines are unknown),
+         * or null if the texts are too big to compare.
+         */
+        String unifiedDiff() {
+            if (this.changes == null) {
+                return null;
+            }
+            return StopDiffExcerpt.unifiedDiff(
+                    this.oldText, this.newText, this.changes, this.stopStart, this.stopEnd, CONTEXT_LINES);
         }
 
         /**
@@ -226,7 +244,7 @@ final class StopDiffViewer {
         final int line = stop.isDetailedFragmentKnown() ? stop.getMostRecentFragment().getFrom().getLine() : 1;
         final List<StopDiffExcerpt.Change> changes = compare(oldText, newText);
         return new StopDiffData(newFile.getPath(), oldText, newText, oldTitle, newTitle, line, changes,
-                createExcerpt(stop, oldText, newText, changes));
+                stopRange(stop));
     }
 
     /**
@@ -248,16 +266,18 @@ final class StopDiffViewer {
         return changes;
     }
 
-    private static StopDiffExcerpt createExcerpt(Stop stop, String oldText, String newText,
-            List<StopDiffExcerpt.Change> changes) {
-        if (!stop.isDetailedFragmentKnown() || changes == null) {
+    /**
+     * The stop's range of lines in the most recent file (0-based, end exclusive), or null if unknown.
+     */
+    private static int[] stopRange(Stop stop) {
+        if (!stop.isDetailedFragmentKnown()) {
             return null;
         }
         final IFragment fragment = stop.getMostRecentFragment();
         final int stopStart = fragment.getFrom().getLine() - 1;
         final int stopEnd = Math.max(stopStart,
                 fragment.getTo().getColumn() > 1 ? fragment.getTo().getLine() : fragment.getTo().getLine() - 1);
-        return StopDiffExcerpt.create(oldText, newText, changes, stopStart, stopEnd, CONTEXT_LINES);
+        return new int[] {stopStart, stopEnd};
     }
 
     /**

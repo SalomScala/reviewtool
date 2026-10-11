@@ -11,10 +11,12 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.options.Configurable;
 import com.intellij.openapi.options.ConfigurationException;
+import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.ui.TitledSeparator;
+import com.intellij.ui.components.JBCheckBox;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBPasswordField;
 import com.intellij.ui.components.JBTextField;
@@ -49,11 +51,21 @@ public class ReviewToolConfigurable implements Configurable {
     private JBTextField logMessagePatternField;
     private JBTextField maxDiffThresholdField;
     private StopOrderingTable stopOrderingTable;
+    private JBCheckBox aiEnabledBox;
+    private JBTextField opencodePathField;
     /** The token as loaded from the settings (null while it is loaded in the background). */
     private String loadedToken;
 
     public ReviewToolConfigurable(Project project) {
         this.project = project;
+    }
+
+    /**
+     * Opens the CoRT settings in a dialog of their own. (Opening the whole settings dialog creates all
+     * settings pages of the IDE on the EDT, which the IDE reports as a slow operation of CoRT.)
+     */
+    public static void show(Project project) {
+        ShowSettingsUtil.getInstance().editConfigurable(project, new ReviewToolConfigurable(project));
     }
 
     @Override
@@ -79,6 +91,13 @@ public class ReviewToolConfigurable implements Configurable {
         this.logMessagePatternField = new JBTextField();
         this.maxDiffThresholdField = new JBTextField();
         this.stopOrderingTable = new StopOrderingTable();
+        this.aiEnabledBox = new JBCheckBox("Enable AI support via opencode (summary of the changes, explanations of stops)");
+        this.opencodePathField = new JBTextField();
+        this.opencodePathField.getEmptyText().setText("opencode (from the PATH)");
+        final JButton checkOpencodeButton = new JButton("Check opencode");
+        checkOpencodeButton.addActionListener((e) -> this.checkOpencode());
+        final JPanel checkOpencodePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        checkOpencodePanel.add(checkOpencodeButton);
 
         this.urlField.getEmptyText().setText("e.g. https://youtrack.example.com");
         final JButton testButton = new JButton("Test Connection");
@@ -113,6 +132,13 @@ public class ReviewToolConfigurable implements Configurable {
                 .addComponentToRightColumn(hint("Regular expression for the commits of a ticket; ${key} is the"
                         + " ticket key"))
                 .addLabeledComponent("Max file size for textual diff (bytes):", this.maxDiffThresholdField)
+                .addComponent(new TitledSeparator("AI Support (opencode)"))
+                .addComponent(this.aiEnabledBox)
+                .addComponent(hint("<html>CoRT starts your local opencode in the project directory and sends the diffs"
+                        + " of the review<br>to the model configured in opencode. The model may read the project's"
+                        + " files but cannot change anything.</html>"))
+                .addLabeledComponent("opencode executable:", this.opencodePathField)
+                .addComponentToRightColumn(checkOpencodePanel)
                 .addComponent(new TitledSeparator("Grouping and Order of the Stops in a Tour"))
                 .addComponent(new JBLabel("<html>The active relations are used (in this priority order) to group"
                         + " and sort the stops when the tours are created.</html>"))
@@ -167,6 +193,30 @@ public class ReviewToolConfigurable implements Configurable {
         }
     }
 
+    /**
+     * Starts opencode with the entered executable and shows its version and model.
+     */
+    private void checkOpencode() {
+        final String executable = this.opencodePathField.getText().trim().isEmpty()
+                ? "opencode" : this.opencodePathField.getText().trim();
+        final AtomicReference<String> report = new AtomicReference<>();
+        final AtomicReference<Exception> error = new AtomicReference<>();
+        ProgressManager.getInstance().runProcessWithProgressSynchronously(() -> {
+            try {
+                report.set(OpencodeServer.getInstance(this.project).check(executable,
+                        () -> ProgressManager.getInstance().getProgressIndicator() != null
+                                && ProgressManager.getInstance().getProgressIndicator().isCanceled()));
+            } catch (final RuntimeException e) {
+                error.set(e);
+            }
+        }, "Checking opencode", true, this.project);
+        if (error.get() != null) {
+            Messages.showErrorDialog(this.panel, String.valueOf(error.get().getMessage()), "Check opencode");
+        } else if (report.get() != null) {
+            Messages.showInfoMessage(this.panel, report.get(), "Check opencode");
+        }
+    }
+
     private ReviewToolSettings getSettings() {
         return ReviewToolSettings.getInstance(this.project);
     }
@@ -189,7 +239,9 @@ public class ReviewToolConfigurable implements Configurable {
                 || !this.ticketLinkPatternField.getText().equals(s.ticketLinkPattern)
                 || !this.logMessagePatternField.getText().equals(s.logMessagePattern)
                 || !this.maxDiffThresholdField.getText().equals(Long.toString(s.maxTextDiffFileSizeThreshold))
-                || !this.stopOrderingTable.getSettings().equals(StopOrderingSettings.normalize(s.stopOrdering));
+                || !this.stopOrderingTable.getSettings().equals(StopOrderingSettings.normalize(s.stopOrdering))
+                || this.aiEnabledBox.isSelected() != s.aiEnabled
+                || !this.opencodePathField.getText().trim().equals(s.opencodePath);
     }
 
     @Override
@@ -224,6 +276,8 @@ public class ReviewToolConfigurable implements Configurable {
         s.logMessagePattern = this.logMessagePatternField.getText().trim();
         s.maxTextDiffFileSizeThreshold = threshold;
         s.stopOrdering = this.stopOrderingTable.getSettings();
+        s.aiEnabled = this.aiEnabledBox.isSelected();
+        s.opencodePath = this.opencodePathField.getText().trim();
     }
 
     @Override
@@ -245,6 +299,8 @@ public class ReviewToolConfigurable implements Configurable {
         this.logMessagePatternField.setText(s.logMessagePattern);
         this.maxDiffThresholdField.setText(Long.toString(s.maxTextDiffFileSizeThreshold));
         this.stopOrderingTable.setSettings(s.stopOrdering);
+        this.aiEnabledBox.setSelected(s.aiEnabled);
+        this.opencodePathField.setText(s.opencodePath);
     }
 
     private boolean isTokenModified() {

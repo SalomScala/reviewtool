@@ -4,7 +4,6 @@ import com.intellij.notification.Notification;
 import com.intellij.notification.NotificationAction;
 import com.intellij.notification.NotificationGroupManager;
 import com.intellij.notification.NotificationType;
-import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.project.Project;
 
 import de.setsoftware.reviewtool.base.Logger;
@@ -120,7 +119,7 @@ final class IntellijNotifications {
             }
             if (withSettingsLink) {
                 notification.addAction(NotificationAction.createSimpleExpiring("Open settings", () ->
-                        ShowSettingsUtil.getInstance().showSettingsDialog(project, ReviewToolConfigurable.class)));
+                        ReviewToolConfigurable.show(project)));
             }
             notification.notify(project);
         });
