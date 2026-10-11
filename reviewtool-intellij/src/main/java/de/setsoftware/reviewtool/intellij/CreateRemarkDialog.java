@@ -85,6 +85,7 @@ final class CreateRemarkDialog extends DialogWrapper {
     };
 
     private final JComboBox<TypeItem> typeCombo = new JComboBox<>(TYPES);
+    private boolean rememberType = true;
     private final JBTextArea textArea = new JBTextArea(6, 50);
     private final JComboBox<ReferenceItem> referenceCombo = new JComboBox<>();
 
@@ -124,6 +125,19 @@ final class CreateRemarkDialog extends DialogWrapper {
         this.selectLastUsedType();
         this.installKeyboardShortcuts();
         this.init();
+    }
+
+    /**
+     * Preselects the given kind instead of the last used one (e.g. the kind of a remark suggested by the
+     * AI). The kind is then not remembered as the last used one.
+     */
+    void preselectType(RemarkType type) {
+        for (final TypeItem item : TYPES) {
+            if (item.type == type) {
+                this.typeCombo.setSelectedItem(item);
+                this.rememberType = false;
+            }
+        }
     }
 
     private void selectLastUsedType() {
@@ -196,7 +210,9 @@ final class CreateRemarkDialog extends DialogWrapper {
 
     @Override
     protected void doOKAction() {
-        PropertiesComponent.getInstance().setValue(LAST_TYPE_KEY, this.getRemarkType().name());
+        if (this.rememberType) {
+            PropertiesComponent.getInstance().setValue(LAST_TYPE_KEY, this.getRemarkType().name());
+        }
         super.doOKAction();
     }
 

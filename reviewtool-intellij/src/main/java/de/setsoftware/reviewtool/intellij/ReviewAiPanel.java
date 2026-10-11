@@ -1,13 +1,16 @@
 package de.setsoftware.reviewtool.intellij;
 
 import java.awt.BorderLayout;
+import java.awt.Point;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
@@ -15,7 +18,9 @@ import java.util.regex.Pattern;
 
 import javax.swing.JEditorPane;
 import javax.swing.JPanel;
+import javax.swing.SwingUtilities;
 import javax.swing.event.HyperlinkEvent;
+import javax.swing.text.DefaultCaret;
 
 import com.intellij.icons.AllIcons;
 import com.intellij.ide.ActivityTracker;
@@ -35,22 +40,73 @@ import com.intellij.util.ui.UIUtil;
 import de.setsoftware.reviewtool.base.Logger;
 import de.setsoftware.reviewtool.intellij.OpencodeClient.Answer;
 import de.setsoftware.reviewtool.intellij.OpencodeClient.OpencodeException;
+import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.RemarkSuggestion;
 import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.StopForAi;
+import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.StopRisk;
 import de.setsoftware.reviewtool.model.api.IClassification;
 import de.setsoftware.reviewtool.model.api.IFragment;
 import de.setsoftware.reviewtool.model.changestructure.Stop;
 import de.setsoftware.reviewtool.model.changestructure.Tour;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
+import de.setsoftware.reviewtool.model.remarks.RemarkType;
 
 /**
  * The "AI" tab: AI support for the review via a local opencode (optional, off by default). It asks the
- * model configured in opencode for a summary of the changes as a starting point and for explanations
- * of single stops, and shows the answers. All requests about the same tours go to one opencode session,
- * so the changes are sent only once; the model may read (but not change) the project's files.
+ * model configured in opencode for a summary of the changes as a starting point, for explanations of
+ * single stops, for remark suggestions (which the reviewer accepts or rejects) and for a rating of the
+ * stops' risk (shown in the "Tours" tab), and shows the answers. All requests about the same tours go to
+ * one opencode session, so the changes are sent only once; the model may read (but not change) the
+ * project's files.
  */
 final class ReviewAiPanel extends JPanel {
 
     private static final long serialVersionUID = 1L;
+
+    /**
+     * The kinds of requests.
+     */
+    private enum Kind {
+        SUMMARY("Summary of the changes"),
+        EXPLAIN("Explanation"),
+        REMARKS("Suggested remarks"),
+        RISKS("Risk of the stops");
+
+        private final String title;
+
+        Kind(String title) {
+            this.title = title;
+        }
+    }
+
+    /**
+     * Adds a remark suggested by the AI (after the user has checked and possibly edited it).
+     */
+    interface RemarkAcceptor {
+        /**
+         * @param line The line in the stop's file, or 0 for the stop as a whole.
+         * @return True iff the remark has been added.
+         */
+        boolean accept(Stop stop, int line, RemarkType type, String text);
+    }
+
+    /**
+     * A remark suggestion shown in the panel, with its state.
+     */
+    private static final class Suggestion {
+        private final RemarkSuggestion remark;
+        private final Stop stop;
+        private final StopForAi stopForAi;
+        private final int conversation;
+        private boolean accepted;
+        private boolean rejected;
+
+        Suggestion(RemarkSuggestion remark, Stop stop, StopForAi stopForAi, int conversation) {
+            this.remark = remark;
+            this.stop = stop;
+            this.stopForAi = stopForAi;
+            this.conversation = conversation;
+        }
+    }
 
     /**
      * An answer (or an error) shown in the panel.
@@ -59,11 +115,18 @@ final class ReviewAiPanel extends JPanel {
         private final String title;
         private final String html;
         private final boolean error;
+        /** The remark suggestions of the answer (they are rendered with their current state), or null. */
+        private final List<Suggestion> suggestions;
 
         Entry(String title, String html, boolean error) {
+            this(title, html, error, null);
+        }
+
+        Entry(String title, String html, boolean error, List<Suggestion> suggestions) {
             this.title = title;
             this.html = html;
             this.error = error;
+            this.suggestions = suggestions;
         }
     }
 
@@ -73,6 +136,7 @@ final class ReviewAiPanel extends JPanel {
     private final transient Supplier<Stop> selectedStop;
     private final transient Runnable openSettings;
     private final JEditorPane content = new JEditorPane();
+    private final JBScrollPane scrollPane;
     private final JBLabel status = new JBLabel();
     private final List<Entry> entries = new ArrayList<>();
 
@@ -87,6 +151,10 @@ final class ReviewAiPanel extends JPanel {
     private int conversation;
     private boolean busy;
     private final transient Consumer<Stop> showStop;
+    /** All remark suggestions shown, by their id (used in the links). */
+    private final transient List<Suggestion> suggestions = new ArrayList<>();
+    private transient RemarkAcceptor remarkAcceptor = (stop, line, type, text) -> false;
+    private transient BiConsumer<ToursInReview, Map<Stop, StopRisk>> riskListener = (t, r) -> { };
 
     /**
      * @param tours Returns the current tours (null if there are none).
@@ -108,6 +176,10 @@ final class ReviewAiPanel extends JPanel {
                 () -> !this.busy, this::summarize)));
         group.add(PanelActions.withTextInToolbar(PanelActions.action("Explain Selected Stop",
                 AllIcons.Actions.IntentionBulb, () -> !this.busy, () -> this.explain(this.selectedStop.get()))));
+        group.add(PanelActions.withTextInToolbar(PanelActions.action("Suggest Remarks", AllIcons.General.Balloon,
+                () -> !this.busy, this::suggestRemarks)));
+        group.add(PanelActions.withTextInToolbar(PanelActions.action("Rate Risks", AllIcons.General.Warning,
+                () -> !this.busy, this::rateRisks)));
         group.add(PanelActions.action("Clear Answers", AllIcons.Actions.GC, () -> !this.entries.isEmpty() && !this.busy,
                 this::clear));
         final ActionToolbar toolbar = ActionManager.getInstance().createActionToolbar("CoRT.Ai", group, true);
@@ -115,6 +187,10 @@ final class ReviewAiPanel extends JPanel {
         this.add(toolbar.getComponent(), BorderLayout.NORTH);
 
         this.content.setEditable(false);
+        // the panel scrolls itself (to the top for a new answer, to the old position after accepting a remark)
+        if (this.content.getCaret() instanceof DefaultCaret) {
+            ((DefaultCaret) this.content.getCaret()).setUpdatePolicy(DefaultCaret.NEVER_UPDATE);
+        }
         // the IDE's font and colors, with line wrapping
         this.content.setEditorKit(
                 new HTMLEditorKitBuilder().withWordWrapViewFactory().withGapsBetweenParagraphs().build());
@@ -128,13 +204,33 @@ final class ReviewAiPanel extends JPanel {
                 this.openSettings.run();
             } else if (e.getDescription() != null && e.getDescription().startsWith("stop:")) {
                 this.linkToStopClicked(e.getDescription());
+            } else if (e.getDescription() != null && e.getDescription().startsWith("accept:")) {
+                this.accept(Integer.parseInt(e.getDescription().substring("accept:".length())));
+            } else if (e.getDescription() != null && e.getDescription().startsWith("reject:")) {
+                this.reject(Integer.parseInt(e.getDescription().substring("reject:".length())));
             }
         });
-        this.add(new JBScrollPane(this.content), BorderLayout.CENTER);
+        this.scrollPane = new JBScrollPane(this.content);
+        this.add(this.scrollPane, BorderLayout.CENTER);
         this.status.setBorder(JBUI.Borders.empty(2, 6));
         this.status.setComponentStyle(UIUtil.ComponentStyle.SMALL);
         this.add(this.status, BorderLayout.SOUTH);
         this.render();
+    }
+
+    /**
+     * Sets the callback that adds an accepted remark suggestion to the review remarks.
+     */
+    void setRemarkAcceptor(RemarkAcceptor acceptor) {
+        this.remarkAcceptor = acceptor;
+    }
+
+    /**
+     * Sets the callback that shows the risks of the stops (for the given tours; null and an empty map
+     * when the risks shall not be shown anymore).
+     */
+    void setRiskListener(BiConsumer<ToursInReview, Map<Stop, StopRisk>> listener) {
+        this.riskListener = listener;
     }
 
     private boolean isEnabledInSettings() {
@@ -152,7 +248,21 @@ final class ReviewAiPanel extends JPanel {
      * Asks the model for a summary of the changes as a starting point for the review.
      */
     void summarize() {
-        this.ask("Summary of the changes", null);
+        this.ask(Kind.SUMMARY, null);
+    }
+
+    /**
+     * Asks the model for remark suggestions, which the user can accept or reject.
+     */
+    void suggestRemarks() {
+        this.ask(Kind.REMARKS, null);
+    }
+
+    /**
+     * Asks the model to rate the risk of the stops; the ratings are shown in the "Tours" tab.
+     */
+    void rateRisks() {
+        this.ask(Kind.RISKS, null);
     }
 
     /**
@@ -165,15 +275,18 @@ final class ReviewAiPanel extends JPanel {
                     true));
             return;
         }
-        this.ask("Explanation", stop);
+        this.ask(Kind.EXPLAIN, stop);
     }
 
     private void clear() {
         this.entries.clear();
+        this.suggestions.clear();
+        this.riskListener.accept(null, new HashMap<>());
         this.render();
     }
 
-    private void ask(String title, Stop stop) {
+    private void ask(Kind kind, Stop stop) {
+        final String title = kind.title;
         if (!this.isEnabledInSettings()) {
             this.render();
             return;
@@ -222,21 +335,26 @@ final class ReviewAiPanel extends JPanel {
                     if (stop != null && stopForAi == null) {
                         throw new OpencodeException("The stop is not part of the current tours.", false, null);
                     }
-                    text.append(stop == null ? ReviewAiPrompts.summaryRequest()
-                            : ReviewAiPrompts.explainRequest(stopForAi));
+                    text.append(request(kind, stopForAi));
                     String session = ReviewAiPanel.this.sessionId;
                     if (session == null) {
                         session = client.createSession("CoRT review: " + reviewName);
                     }
                     indicator.setText("Waiting for the answer of the model (this can take a minute)...");
-                    final Answer answer = client.prompt(session, ReviewAiPrompts.system(Locale.getDefault()),
-                            text.toString(), indicator::isCanceled);
+                    final String system = ReviewAiPrompts.system(Locale.getDefault());
+                    final Answer answer;
+                    if (kind == Kind.REMARKS) {
+                        answer = client.promptStructured(session, system, text.toString(),
+                                ReviewAiPrompts.remarksSchema(), indicator::isCanceled);
+                    } else if (kind == Kind.RISKS) {
+                        answer = client.promptStructured(session, system, text.toString(),
+                                ReviewAiPrompts.risksSchema(), indicator::isCanceled);
+                    } else {
+                        answer = client.prompt(session, system, text.toString(), indicator::isCanceled);
+                    }
                     final String finalSession = session;
                     final int finalOmitted = omitted;
-                    final Map<Integer, Stop> numbers = new HashMap<>();
-                    for (final Map.Entry<Stop, StopForAi> e : stops.entrySet()) {
-                        numbers.put(e.getValue().getNumber(), e.getKey());
-                    }
+                    final Map<Integer, Stop> numbers = byNumber(stops);
                     final String heading = stopForAi == null ? title : title + " of " + stopForAi.describe();
                     ApplicationManager.getApplication().invokeLater(() -> {
                         if (ReviewAiPanel.this.sessionTours == currentTours) {
@@ -244,7 +362,13 @@ final class ReviewAiPanel extends JPanel {
                             ReviewAiPanel.this.changesSent = true;
                             ReviewAiPanel.this.stopsByNumber = numbers;
                         }
-                        ReviewAiPanel.this.answered(heading, answer, finalOmitted);
+                        if (kind == Kind.REMARKS) {
+                            ReviewAiPanel.this.remarksSuggested(answer, stops, finalOmitted);
+                        } else if (kind == Kind.RISKS) {
+                            ReviewAiPanel.this.risksRated(answer, stops, currentTours, finalOmitted);
+                        } else {
+                            ReviewAiPanel.this.answered(heading, answer, finalOmitted);
+                        }
                     });
                 } catch (final CancellationException e) {
                     ApplicationManager.getApplication().invokeLater(() -> ReviewAiPanel.this.failed(fullTitle,
@@ -259,6 +383,20 @@ final class ReviewAiPanel extends JPanel {
                 }
             }
         }.queue();
+    }
+
+    private static String request(Kind kind, StopForAi stop) {
+        switch (kind) {
+        case EXPLAIN:
+            return ReviewAiPrompts.explainRequest(stop);
+        case REMARKS:
+            return ReviewAiPrompts.remarksRequest();
+        case RISKS:
+            return ReviewAiPrompts.risksRequest();
+        case SUMMARY:
+        default:
+            return ReviewAiPrompts.summaryRequest();
+        }
     }
 
     /**
@@ -331,13 +469,190 @@ final class ReviewAiPanel extends JPanel {
         this.setBusy(false);
         final StringBuilder html = new StringBuilder(
                 linkStops(SimpleMarkdown.toHtml(answer.getText()), this.stopsByNumber.keySet(), this.conversation));
+        appendOmittedHint(html, omittedDiffs);
+        this.addEntry(new Entry(titleWithModel(title, answer), html.toString(), false));
+        this.setStatus("");
+    }
+
+    private static String titleWithModel(String title, Answer answer) {
+        return title + (answer.getModel() == null ? "" : "  ·  " + answer.getModel());
+    }
+
+    private static void appendOmittedHint(StringBuilder html, int omittedDiffs) {
         if (omittedDiffs > 0) {
             html.append("<p class='hint'>The diffs of ").append(omittedDiffs).append(omittedDiffs == 1 ? " stop" : " stops")
                     .append(" were left out because the changes are too big; the model could read the files.</p>");
         }
-        this.addEntry(new Entry(title + (answer.getModel() == null ? "" : "  ·  " + answer.getModel()),
-                html.toString(), false));
+    }
+
+    private static Map<Integer, Stop> byNumber(Map<Stop, StopForAi> stops) {
+        final Map<Integer, Stop> result = new HashMap<>();
+        for (final Map.Entry<Stop, StopForAi> e : stops.entrySet()) {
+            result.put(e.getValue().getNumber(), e.getKey());
+        }
+        return result;
+    }
+
+    /**
+     * Shows the remark suggestions of the answer (package-private for tests).
+     */
+    void remarksSuggested(Answer answer, Map<Stop, StopForAi> stops, int omittedDiffs) {
+        this.setBusy(false);
         this.setStatus("");
+        final Map<Integer, Stop> numbers = byNumber(stops);
+        final List<RemarkSuggestion> remarks = ReviewAiPrompts.parseRemarks(answer.getStructured(), numbers.keySet());
+        final List<Suggestion> entrySuggestions = new ArrayList<>();
+        for (final RemarkSuggestion remark : remarks) {
+            final Stop stop = numbers.get(remark.getStop());
+            entrySuggestions.add(new Suggestion(remark, stop, stops.get(stop), this.conversation));
+        }
+        final StringBuilder html = new StringBuilder();
+        if (remarks.isEmpty()) {
+            html.append("<p>The model has no remarks to suggest.</p>");
+        }
+        final int leftOut = ReviewAiPrompts.count(answer.getStructured(), "remarks") - remarks.size();
+        if (leftOut > 0) {
+            html.append("<p class='hint'>").append(leftOut).append(leftOut == 1 ? " suggestion was" : " suggestions were")
+                    .append(" left out (unknown stop, unknown kind or no text).</p>");
+        }
+        appendOmittedHint(html, omittedDiffs);
+        this.addEntry(new Entry(titleWithModel(Kind.REMARKS.title, answer), html.toString(), false, entrySuggestions));
+    }
+
+    /**
+     * Shows the risks of the stops of the answer and passes them to the risk listener (package-private
+     * for tests).
+     */
+    void risksRated(Answer answer, Map<Stop, StopForAi> stops, ToursInReview ratedTours, int omittedDiffs) {
+        this.setBusy(false);
+        this.setStatus("");
+        final Map<Integer, Stop> numbers = byNumber(stops);
+        final List<StopRisk> risks = ReviewAiPrompts.parseRisks(answer.getStructured(), numbers.keySet());
+        final Map<Stop, StopRisk> byStop = new HashMap<>();
+        for (final StopRisk risk : risks) {
+            byStop.put(numbers.get(risk.getStop()), risk);
+        }
+        this.riskListener.accept(ratedTours, byStop);
+        final StringBuilder html = new StringBuilder();
+        if (risks.isEmpty()) {
+            html.append("<p>The model did not rate any stop.</p>");
+        } else {
+            html.append("<p>The ratings are also shown in the \"Tours\" tab (high and medium risk).</p><ul>");
+            for (final StopRisk risk : risks) {
+                final StopForAi stop = stops.get(numbers.get(risk.getStop()));
+                html.append("<li>").append(riskLabel(risk.getRisk())).append(' ')
+                        .append(SimpleMarkdown.escape(stop.describe()));
+                if (!risk.getReason().isEmpty()) {
+                    html.append(" &ndash; ").append(SimpleMarkdown.escape(risk.getReason()));
+                }
+                html.append("</li>");
+            }
+            html.append("</ul>");
+        }
+        final int notRated = stops.size() - risks.size();
+        if (notRated > 0 && !risks.isEmpty()) {
+            html.append("<p class='hint'>").append(notRated).append(notRated == 1 ? " stop was" : " stops were")
+                    .append(" not rated.</p>");
+        }
+        appendOmittedHint(html, omittedDiffs);
+        this.addEntry(new Entry(titleWithModel(Kind.RISKS.title, answer),
+                linkStops(html.toString(), numbers.keySet(), this.conversation), false));
+    }
+
+    private static String riskLabel(String risk) {
+        switch (risk) {
+        case "high":
+            return "<b style='color:#d04040'>high</b>";
+        case "medium":
+            return "<b style='color:#c08020'>medium</b>";
+        default:
+            return "<b>" + SimpleMarkdown.escape(risk) + "</b>";
+        }
+    }
+
+    private static RemarkType remarkType(String kind) {
+        switch (kind) {
+        case "must":
+            return RemarkType.MUST_FIX;
+        case "can":
+            return RemarkType.CAN_FIX;
+        case "positive":
+            return RemarkType.POSITIVE;
+        default:
+            return RemarkType.OTHER;
+        }
+    }
+
+    private static String kindLabel(String kind) {
+        switch (kind) {
+        case "must":
+            return "must fix";
+        case "can":
+            return "can fix";
+        default:
+            return kind;
+        }
+    }
+
+    private String suggestionsHtml(List<Suggestion> list) {
+        final StringBuilder html = new StringBuilder();
+        for (final Suggestion s : list) {
+            final int id = this.suggestions.indexOf(s);
+            final RemarkSuggestion r = s.remark;
+            final String location = s.stopForAi.getPath().replaceFirst(".*/", "")
+                    + (r.getLine() > 0 ? ":" + r.getLine() : "");
+            html.append("<p>").append(s.rejected ? "<s>" : "").append("<b>[").append(kindLabel(r.getKind()))
+                    .append("]</b> ").append(SimpleMarkdown.escape(r.getText())).append(s.rejected ? "</s>" : "")
+                    .append("<br>");
+            final String stopLink = s.conversation == this.conversation
+                    ? "<a href='stop:" + s.conversation + ":" + r.getStop() + "'>Stop " + r.getStop() + "</a>"
+                    : "Stop " + r.getStop();
+            html.append("<span class='hint'>").append(stopLink).append(", ").append(SimpleMarkdown.escape(location));
+            if (!r.getReason().isEmpty()) {
+                html.append(" &ndash; ").append(SimpleMarkdown.escape(r.getReason()));
+            }
+            html.append("</span><br>");
+            if (s.accepted) {
+                html.append("<i>Added to the review remarks.</i>");
+            } else if (s.rejected) {
+                html.append("<i>Rejected.</i> <a href='accept:").append(id).append("'>Accept anyway...</a>");
+            } else {
+                html.append("<a href='accept:").append(id).append("'>Accept...</a> &nbsp; <a href='reject:")
+                        .append(id).append("'>Reject</a>");
+            }
+            html.append("</p>");
+        }
+        return html.toString();
+    }
+
+    /**
+     * Lets the user add the remark suggestion with the given id (package-private for tests).
+     */
+    void accept(int id) {
+        if (id < 0 || id >= this.suggestions.size()) {
+            return;
+        }
+        final Suggestion s = this.suggestions.get(id);
+        if (s.accepted) {
+            return;
+        }
+        // the user can check and edit the remark before it is added
+        if (this.remarkAcceptor.accept(s.stop, s.remark.getLine(), remarkType(s.remark.getKind()), s.remark.getText())) {
+            s.accepted = true;
+            s.rejected = false;
+            this.renderKeepingPosition();
+        }
+    }
+
+    /**
+     * Rejects the remark suggestion with the given id (package-private for tests).
+     */
+    void reject(int id) {
+        if (id < 0 || id >= this.suggestions.size()) {
+            return;
+        }
+        this.suggestions.get(id).rejected = true;
+        this.renderKeepingPosition();
     }
 
     private static final Pattern STOP_REFERENCE = Pattern.compile("\\b([Ss]top) (\\d+)\\b");
@@ -385,6 +700,9 @@ final class ReviewAiPanel extends JPanel {
 
     private void addEntry(Entry entry) {
         this.entries.add(entry);
+        if (entry.suggestions != null) {
+            this.suggestions.addAll(entry.suggestions);
+        }
         this.render();
     }
 
@@ -392,28 +710,46 @@ final class ReviewAiPanel extends JPanel {
         this.status.setText(text);
     }
 
+    /**
+     * Renders the panel without scrolling to the top (e.g. after a suggestion has been accepted).
+     */
+    private void renderKeepingPosition() {
+        this.render(this.scrollPane.getViewport().getViewPosition());
+    }
+
     private void render() {
+        this.render(new Point(0, 0));
+    }
+
+    private void render(Point position) {
         final StringBuilder html = new StringBuilder("<html><body>");
         if (!this.isEnabledInSettings()) {
             html.append("<p><b>AI support is off.</b></p><p>CoRT can ask the AI model configured in your local"
-                    + " <b>opencode</b> for a summary of the changes and for explanations of single stops. The diffs"
-                    + " of the review are then sent to that model; the model may read the project's files but"
-                    + " cannot change anything.</p><p><a href='settings'>Enable it in the settings</a></p>");
+                    + " <b>opencode</b> for a summary of the changes, for explanations of single stops, for remark"
+                    + " suggestions and for the stops that need particular attention. The diffs of the review are"
+                    + " then sent to that model; the model may read the project's files but cannot change"
+                    + " anything.</p><p><a href='settings'>Enable it in the settings</a></p>");
         } else if (this.entries.isEmpty()) {
             html.append("<p>Ask the AI model configured in opencode about the review:</p><ul>"
                     + "<li><b>Summarize Changes</b>: an overview as a starting point (what, why, what to look at"
                     + " carefully)</li><li><b>Explain Selected Stop</b> (or \"Explain with AI\" in the context menu"
-                    + " of a stop): what the stop changes and what to check</li></ul>"
+                    + " of a stop): what the stop changes and what to check</li>"
+                    + "<li><b>Suggest Remarks</b>: remarks you can accept (and edit) or reject</li>"
+                    + "<li><b>Rate Risks</b>: which stops need particular attention (shown in the \"Tours\""
+                    + " tab)</li></ul>"
                     + "<p>AI answers can be wrong - they help you review, they do not replace it.</p>");
         }
         for (int i = this.entries.size() - 1; i >= 0; i--) {
             final Entry e = this.entries.get(i);
             html.append("<h3").append(e.error ? " style='color:#c75450'" : "").append('>')
-                    .append(SimpleMarkdown.escape(e.title)).append("</h3>").append(e.html).append("<hr>");
+                    .append(SimpleMarkdown.escape(e.title)).append("</h3>")
+                    .append(e.suggestions == null ? "" : this.suggestionsHtml(e.suggestions))
+                    .append(e.html).append("<hr>");
         }
         html.append("</body></html>");
         this.content.setText(html.toString());
-        this.content.setCaretPosition(0);
+        // the new text is laid out later
+        SwingUtilities.invokeLater(() -> this.scrollPane.getViewport().setViewPosition(position));
     }
 
     private static String firstLine(String text) {

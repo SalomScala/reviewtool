@@ -91,6 +91,7 @@ import de.setsoftware.reviewtool.model.remarks.FileLinePosition;
 import de.setsoftware.reviewtool.model.remarks.FilePosition;
 import de.setsoftware.reviewtool.model.remarks.GlobalPosition;
 import de.setsoftware.reviewtool.model.remarks.Position;
+import de.setsoftware.reviewtool.model.remarks.RemarkType;
 import de.setsoftware.reviewtool.model.remarks.ReviewData;
 import de.setsoftware.reviewtool.model.remarks.ReviewRemark;
 import de.setsoftware.reviewtool.ticketconnectors.youtrack.YouTrackConnector;
@@ -225,6 +226,8 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         this.toursPanel.setAllStopsVisitedListener(this::allStopsVisited);
         this.toursPanel.setAddRemarkListener(this::addRemarkForStop);
         this.toursPanel.setExplainListener(this::aiExplain);
+        this.aiPanel.setRemarkAcceptor(this::addRemarkFromAi);
+        this.aiPanel.setRiskListener(this.toursPanel::setAiRisks);
         this.toursPanel.setProgressListener(this::progressChanged);
         this.progressSaveTimer = new Timer(3000, (e) -> this.saveProgress(false));
         this.progressSaveTimer.setRepeats(false);
@@ -1925,6 +1928,24 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     }
 
     /**
+     * Lets the user add a remark suggested by the AI, with its text and kind prefilled.
+     *
+     * @param line The line in the stop's file, or 0 for the stop as a whole (then the remark is added
+     *      at the first line of the stop's change).
+     * @return True iff the remark has been added.
+     */
+    boolean addRemarkFromAi(Stop stop, int line, RemarkType type, String text) {
+        final VirtualFile file = IntellijFileResolver.findByAbsoluteFile(stop.getAbsoluteFile());
+        if (file == null) {
+            IntellijNotifications.warn(this.project,
+                    "The file " + stop.getAbsoluteFile() + " does not exist in the working copy (anymore).");
+            return false;
+        }
+        final int stopLine = stop.isDetailedFragmentKnown() ? stop.getMostRecentFragment().getFrom().getLine() : 0;
+        return this.addRemarkAt(file, line > 0 ? line : stopLine, text, type);
+    }
+
+    /**
      * Adds a new review remark for the given stop (at the first line of its change, or for its file
      * if the exact position is unknown).
      */
@@ -1949,8 +1970,18 @@ public class ReviewToolPanel extends JPanel implements Disposable {
      * @param prefillText The text the remark is prefilled with (e.g. the selected text).
      */
     public void addRemarkAt(VirtualFile file, int line, String prefillText) {
+        this.addRemarkAt(file, line, prefillText, null);
+    }
+
+    /**
+     * Like {@link #addRemarkAt(VirtualFile, int, String)}, but with the given kind preselected (null for
+     * the last used kind).
+     *
+     * @return True iff the remark has been added.
+     */
+    boolean addRemarkAt(VirtualFile file, int line, String prefillText, RemarkType preselectedType) {
         if (this.hasTicket() && !this.checkRemarksLoaded()) {
-            return;
+            return false;
         }
         this.remarksModel.reload();
         if (this.remarksModel.getParseError() != null) {
@@ -1958,7 +1989,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
             IntellijNotifications.warn(this.project, "The review remarks have a syntax error, so no remark can be"
                     + " added. Please correct the remarks text in the \"Remarks\" tab first: "
                     + this.remarksModel.getParseError());
-            return;
+            return false;
         }
         final Set<PositionReference> allowed;
         final String location;
@@ -1973,8 +2004,11 @@ public class ReviewToolPanel extends JPanel implements Disposable {
             location = file.getName() + ":" + line;
         }
         final CreateRemarkDialog dialog = new CreateRemarkDialog(this.project, location, prefillText, allowed);
+        if (preselectedType != null) {
+            dialog.preselectType(preselectedType);
+        }
         if (!dialog.showAndGet()) {
-            return;
+            return false;
         }
 
         try {
@@ -2001,8 +2035,10 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                 IntellijNotifications.warn(this.project,
                         "No ticket is selected, so the remark can not be saved to a ticket.");
             }
+            return true;
         } catch (final RuntimeException e) {
             this.showError("Could not add review remark", e);
+            return false;
         }
     }
 

@@ -101,6 +101,19 @@ public class OpencodeClientTest {
         }
     }
 
+    private static String structured(String error, String structured) {
+        final JsonObject info = new JsonObject().add("id", "msg_1").add("providerID", "acme").add("modelID", "review-model");
+        if (error != null) {
+            info.add("error", Json.parse(error));
+        }
+        if (structured != null) {
+            info.add("structured", Json.parse(structured));
+        }
+        final JsonArray parts = new JsonArray().add(new JsonObject().add("type", "step-start"))
+                .add(new JsonObject().add("type", "tool").add("tool", "StructuredOutput"));
+        return new JsonObject().add("info", info).add("parts", parts).toString();
+    }
+
     private static String answer(String error, String... texts) {
         final JsonObject info = new JsonObject().add("id", "msg_1").add("providerID", "acme").add("modelID", "review-model");
         if (error != null) {
@@ -134,7 +147,7 @@ public class OpencodeClientTest {
             assertEquals("allow", rules.get(i).asObject().getString("action", null));
             allowed.add(rules.get(i).asObject().getString("permission", null));
         }
-        assertEquals(List.of("read", "grep", "glob", "list"), allowed);
+        assertEquals(List.of("read", "grep", "glob", "list", "StructuredOutput"), allowed);
     }
 
     @Test
@@ -147,6 +160,43 @@ public class OpencodeClientTest {
         assertEquals("system text", body.getString("system", null));
         assertEquals("the question", body.get("parts").asArray().get(0).asObject().getString("text", null));
         assertTrue(this.requests.contains("POST /session/ses_123/message"));
+    }
+
+    @Test
+    public void testStructuredPrompt() {
+        this.messageResponse = structured(null, "{\"stops\":[{\"stop\":1,\"risk\":\"high\",\"reason\":\"r\"}]}");
+        final JsonObject schema = ReviewAiPrompts.risksSchema();
+        final Answer result = this.client.promptStructured("ses_123", "system text", "Rate the risk", schema, () -> false);
+        assertEquals("high", result.getStructured().get("stops").asArray().get(0).asObject().getString("risk", null));
+        assertEquals("acme/review-model", result.getModel());
+        final JsonObject format = this.bodies.get(0).get("format").asObject();
+        assertEquals("json_schema", format.getString("type", null));
+        assertEquals(schema, format.get("schema"));
+        assertEquals("Rate the risk", this.bodies.get(0).get("parts").asArray().get(0).asObject().getString("text", null));
+        // a normal prompt does not ask for a format
+        this.messageResponse = answer(null, "text");
+        this.client.prompt("ses_123", "s", "q", () -> false);
+        assertNull(this.bodies.get(1).get("format"));
+    }
+
+    @Test
+    public void testNoStructuredAnswer() {
+        this.messageResponse = structured("{\"name\":\"StructuredOutputError\",\"data\":{\"message\":"
+                + "\"Model did not produce structured output\",\"retries\":2}}", null);
+        try {
+            this.client.promptStructured("ses_123", "s", "q", new JsonObject(), () -> false);
+            fail();
+        } catch (final OpencodeException e) {
+            assertTrue(e.getMessage(), e.getMessage().contains("did not answer in the expected format"));
+            assertTrue(e.getMessage(), e.getMessage().contains("Model did not produce structured output"));
+        }
+        this.messageResponse = structured(null, null);
+        try {
+            this.client.promptStructured("ses_123", "s", "q", new JsonObject(), () -> false);
+            fail();
+        } catch (final OpencodeException e) {
+            assertTrue(e.getMessage(), e.getMessage().contains("did not answer in the expected format"));
+        }
     }
 
     @Test

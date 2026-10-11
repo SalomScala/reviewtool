@@ -197,8 +197,22 @@ Sechste Runde (KI-Unterstützung, erste Ausbaustufe; ohne Eclipse-Pendant):
   verständlich im „AI“-Tab, bei Konfigurationsproblemen mit Link zu den Einstellungen.
 - Nebenbei: „Open settings“ öffnet nur noch die CoRT-Seite. Der komplette Einstellungsdialog legte alle Seiten der
   IDE im UI-Thread an, was IntelliJ als „Slow operation“-Fehler von CoRT meldete.
-- Geplant für die nächste Ausbaustufe: Vorschläge für Anmerkungen (übernehmen/verwerfen) und Risikohinweise je Stop.
-  Beides lässt sich mit den strukturierten Antworten von opencode (`format: json_schema`) umsetzen.
+
+Siebte Runde (KI-Unterstützung, zweite Ausbaustufe; ohne Eclipse-Pendant):
+
+- **Vorschläge für Anmerkungen** („Suggest Remarks“ im „AI“-Tab): Das Modell schlägt Anmerkungen mit Stop, Zeile, Art
+  (muss/kann/positiv/sonstige), Text und Begründung vor. „Accept...“ öffnet den normalen Anmerkungsdialog mit Text,
+  Art und Zeile vorbelegt (der Reviewer kann alles ändern; die vorbelegte Art wird nicht als „zuletzt verwendet“
+  gemerkt), „Reject“ streicht den Vorschlag durch („Accept anyway...“ bleibt möglich). Vorschläge zu unbekannten
+  Stops oder ohne Text werden verworfen und gezählt angezeigt. Nichts wird ohne Bestätigung übernommen.
+- **Risikohinweise** („Rate Risks“): Das Modell bewertet jeden Stop mit hoch/mittel/niedrig und kurzer Begründung.
+  Im Tour-Baum stehen „AI: high risk“ (rot) bzw. „AI: medium risk“ (orange) hinter dem Stop, die Begründung im Tooltip
+  und in der Stop-Detailzeile; der „AI“-Tab listet die Stops nach Risiko sortiert mit Links. Die Hinweise gehören zu
+  den Tours, für die sie erstellt wurden, und verschwinden mit „Clear Answers“.
+- Beides nutzt die strukturierten Antworten von opencode (`format: json_schema`): opencode bietet dem Modell dafür das
+  Werkzeug `StructuredOutput` an, das in den sonst schreibgeschützten Sitzungen zusätzlich erlaubt ist. Modelle, die
+  nicht im verlangten Format antworten, führen zu einer verständlichen Meldung.
+- Nach „Accept“/„Reject“ bleibt die Scrollposition im „AI“-Tab erhalten (vorher sprang die Ansicht nach oben).
 
 ## Gefundene und behobene Fehler
 

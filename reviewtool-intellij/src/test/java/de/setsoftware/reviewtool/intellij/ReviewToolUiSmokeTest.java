@@ -268,6 +268,57 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
         assertFalse(result.get().containsKey("Missing.java"));
     }
 
+    /**
+     * Shows remark suggestions and risk ratings of the AI for the real stops (without opencode).
+     */
+    private void checkAiSuggestionsAndRisks(ReviewToursPanel panel, ToursInReview tours, File calculatorFile) {
+        final java.util.Map<Stop, ReviewAiPrompts.StopForAi> stops = new java.util.LinkedHashMap<>();
+        for (final de.setsoftware.reviewtool.model.changestructure.Tour tour : tours.getTopmostTours()) {
+            for (final Stop stop : tour.getStops()) {
+                stops.put(stop, new ReviewAiPrompts.StopForAi(stops.size() + 1, "tour",
+                        stop.getAbsoluteFile().getName(), null, null, null));
+            }
+        }
+        final Stop calculatorStop = tours.getStopsFor(calculatorFile.getAbsoluteFile()).get(0);
+        final int number = stops.get(calculatorStop).getNumber();
+        final ReviewAiPanel ai = new ReviewAiPanel(this.getProject(), () -> tours, () -> "DEMO-2", () -> null,
+                (stop) -> { }, () -> { });
+        final List<Object[]> accepted = new ArrayList<>();
+        ai.setRemarkAcceptor((stop, line, type, text) -> accepted.add(new Object[] {stop, line, type, text}));
+        ai.setRiskListener(panel::setAiRisks);
+        ReviewToolSettings.getInstance(this.getProject()).getState().aiEnabled = true;
+        try {
+            ai.remarksSuggested(new OpencodeClient.Answer("", "acme/model", com.eclipsesource.json.Json.parse(
+                    "{\"remarks\":[{\"stop\":" + number + ",\"line\":0,\"kind\":\"can\",\"text\":\"Use a constant\","
+                    + "\"reason\":\"magic number\"},{\"stop\":999,\"line\":1,\"kind\":\"must\",\"text\":\"x\","
+                    + "\"reason\":\"\"}]}").asObject()), stops, 0);
+            String shown = ai.getShownText();
+            assertTrue(shown, shown.contains("[can fix] Use a constant"));
+            assertTrue(shown, shown.contains("magic number"));
+            assertTrue(shown, shown.contains("1 suggestion was left out (unknown stop"));
+            ai.accept(0);
+            assertEquals(1, accepted.size());
+            assertSame(calculatorStop, accepted.get(0)[0]);
+            assertEquals(0, accepted.get(0)[1]);
+            assertEquals(de.setsoftware.reviewtool.model.remarks.RemarkType.CAN_FIX, accepted.get(0)[2]);
+            assertEquals("Use a constant", accepted.get(0)[3]);
+            assertTrue(ai.getShownText().contains("Added to the review remarks"));
+
+            ai.risksRated(new OpencodeClient.Answer("", null, com.eclipsesource.json.Json.parse(
+                    "{\"stops\":[{\"stop\":" + number + ",\"risk\":\"high\",\"reason\":\"overflow\"}]}").asObject()),
+                    stops, tours, 0);
+            shown = ai.getShownText();
+            assertTrue(shown, shown.contains("high Stop " + number + ": Calculator.java - overflow")
+                    || shown.contains("high Stop " + number + ": Calculator.java \u2013 overflow"));
+            assertEquals("high", panel.getAiRisk(calculatorStop).getRisk());
+            // the ratings belong to the tours
+            panel.setAiRisks(null, java.util.Collections.emptyMap());
+            assertNull(panel.getAiRisk(calculatorStop));
+        } finally {
+            ReviewToolSettings.getInstance(this.getProject()).getState().aiEnabled = false;
+        }
+    }
+
     public void testNavigationDescriptorUsesTheLineStart() {
         final com.intellij.psi.PsiFile file =
                 this.myFixture.addFileToProject("Lines.java", "class Lines {\n    int a;\n    int b;\n}\n");
@@ -420,6 +471,8 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
                 assertTrue("the diff toolbar offers \"Add Review Remark\"",
                         diffActions != null && diffActions.get(0) instanceof CortActions.AddRemark);
             }
+            this.checkAiSuggestionsAndRisks(panel, tours, calculatorFile);
+
             // marking the selected stop as checked keeps it selected, navigating selects the new stop
             assertSame(shown, panel.getSelectedStop());
             panel.toggleChecked(shown);
