@@ -112,6 +112,67 @@ final class StopDiffExcerpt {
                 toArray(oldMap), toArray(newMap));
     }
 
+    /**
+     * Formats the changes as a unified diff ("@@ -a,b +c,d @@" hunks with " ", "-" and "+" lines), e.g.
+     * for an AI prompt. Only the changes that touch the given range of lines in the new text (0-based,
+     * end exclusive) are included; with a negative start, all changes are included.
+     */
+    static String unifiedDiff(String oldText, String newText, List<Change> changes,
+            int stopStart, int stopEnd, int contextLines) {
+        final String[] oldLines = splitLines(oldText);
+        final String[] newLines = splitLines(newText);
+        final List<Change> relevant = new ArrayList<>();
+        for (final Change c : changes) {
+            if (stopStart < 0 || c.touchesNew(stopStart, stopEnd)) {
+                relevant.add(c);
+            }
+        }
+        final StringBuilder sb = new StringBuilder();
+        int i = 0;
+        while (i < relevant.size()) {
+            // changes that are close to each other share a hunk
+            int j = i;
+            while (j + 1 < relevant.size() && relevant.get(j + 1).oldStart - relevant.get(j).oldEnd <= 2 * contextLines) {
+                j++;
+            }
+            final Change first = relevant.get(i);
+            final Change last = relevant.get(j);
+            final int before = Math.min(contextLines, Math.min(first.oldStart, first.newStart));
+            final int after = Math.min(contextLines,
+                    Math.min(oldLines.length - last.oldEnd, newLines.length - last.newEnd));
+            final int oldFrom = first.oldStart - before;
+            final int oldTo = last.oldEnd + after;
+            final int newFrom = first.newStart - before;
+            final int newTo = last.newEnd + after;
+            sb.append("@@ -").append(hunkRange(oldFrom, oldTo)).append(" +").append(hunkRange(newFrom, newTo))
+                    .append(" @@\n");
+            int line = oldFrom;
+            for (int k = i; k <= j; k++) {
+                final Change c = relevant.get(k);
+                for (; line < c.oldStart; line++) {
+                    sb.append(' ').append(oldLines[line]).append('\n');
+                }
+                for (int x = c.oldStart; x < c.oldEnd; x++) {
+                    sb.append('-').append(oldLines[x]).append('\n');
+                }
+                for (int x = c.newStart; x < c.newEnd; x++) {
+                    sb.append('+').append(newLines[x]).append('\n');
+                }
+                line = c.oldEnd;
+            }
+            for (; line < oldTo; line++) {
+                sb.append(' ').append(oldLines[line]).append('\n');
+            }
+            i = j + 1;
+        }
+        return sb.toString();
+    }
+
+    private static String hunkRange(int from, int to) {
+        final int count = to - from;
+        return (count == 0 ? from : from + 1) + "," + count;
+    }
+
     private static String[] splitLines(String text) {
         if (text.isEmpty()) {
             return new String[0];

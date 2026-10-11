@@ -126,6 +126,7 @@ public final class ReviewToursPanel extends JPanel {
     private ToursInReview tours;
     private Runnable allStopsVisitedListener;
     private Consumer<Stop> addRemarkListener;
+    private Consumer<Stop> explainListener;
     private Runnable progressListener;
     private int lastNotVisitedCount = -1;
     private boolean hideIrrelevant;
@@ -259,6 +260,9 @@ public final class ReviewToursPanel extends JPanel {
         menu.add(PanelActions.action("Add Remark...", AllIcons.General.Add,
                 () -> this.getSelectedStop() != null && this.addRemarkListener != null,
                 () -> this.addRemarkListener.accept(this.getSelectedStop())));
+        menu.add(PanelActions.action("Explain with AI", AllIcons.Actions.IntentionBulb,
+                () -> this.getSelectedStop() != null && this.explainListener != null,
+                () -> this.explainListener.accept(this.getSelectedStop())));
         menu.add(PanelActions.action("Open Containing Folder", AllIcons.Actions.MenuOpen, () -> this.getSelectedStop() != null,
                 () -> this.openContainingFolder(this.getSelectedStop())));
         menu.add(PanelActions.action(
@@ -471,6 +475,13 @@ public final class ReviewToursPanel extends JPanel {
      */
     ViewStatistics getStatistics() {
         return this.statistics;
+    }
+
+    /**
+     * Sets the action that asks the AI to explain a stop (used by the context menu).
+     */
+    void setExplainListener(Consumer<Stop> listener) {
+        this.explainListener = listener;
     }
 
     /**
@@ -806,6 +817,13 @@ public final class ReviewToursPanel extends JPanel {
      * selected (it is highlighted by the stop marker), so that typing does not replace it and new
      * remarks are not prefilled with it.
      */
+    /**
+     * Selects the given stop in the tree and opens its file at the stop (e.g. from a link in an AI answer).
+     */
+    void showStop(Stop stop) {
+        this.jumpToStop(stop);
+    }
+
     private void jumpToStop(Stop stop) {
         this.setCurrentStop(stop);
         final Tour tour = this.tours.getTopmostTourWith(stop);

@@ -237,6 +237,23 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
         panel.setTicketListVisible(true);
         // without YouTrack settings, a settings change does not try to load tickets
         panel.settingsChanged();
+
+        // the AI support is off by default; the "AI" tab explains it instead of sending anything
+        assertFalse(ReviewToolSettings.getInstance(this.getProject()).getState().aiEnabled);
+        panel.aiSummarize();
+        assertTrue(panel.getAiPanel().getShownText(), panel.getAiPanel().getShownText().contains("AI support is off"));
+        ReviewToolSettings.getInstance(this.getProject()).getState().aiEnabled = true;
+        try {
+            panel.settingsChanged();
+            assertTrue(panel.getAiPanel().getShownText().contains("Summarize Changes"));
+            // without tours, nothing is sent either
+            panel.aiSummarize();
+            assertTrue(panel.getAiPanel().getShownText(), panel.getAiPanel().getShownText().contains("no review tours"));
+            panel.aiExplain(null);
+            assertTrue(panel.getAiPanel().getShownText().contains("Select a stop"));
+        } finally {
+            ReviewToolSettings.getInstance(this.getProject()).getState().aiEnabled = false;
+        }
     }
 
     public void testFilesAreResolvedInTheBackground() {
@@ -379,6 +396,9 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
             details.setOnlyStopChanges(true);
             final File calculatorFile = new File(repo, "src/main/java/demo/Calculator.java");
             for (final Stop stop : tours.getStopsFor(calculatorFile.getAbsoluteFile())) {
+                // the AI gets the stop's changes as a unified diff
+                final String unified = StopDiffViewer.load(stop).unifiedDiff();
+                assertTrue(unified, unified.startsWith("@@ -") && unified.contains("\n+"));
                 final StopDiffExcerpt excerpt = StopDiffViewer.load(stop).getExcerpt();
                 assertNotNull(excerpt);
                 final boolean importStop = stop.getMostRecentFragment().getFrom().getLine() < 5;
