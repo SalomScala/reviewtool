@@ -1,6 +1,7 @@
 package de.setsoftware.reviewtool.intellij;
 
 import java.awt.BorderLayout;
+import java.awt.Color;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
@@ -9,6 +10,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -39,6 +41,7 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.ColoredTreeCellRenderer;
+import com.intellij.ui.JBColor;
 import com.intellij.ui.JBSplitter;
 import com.intellij.ui.PopupHandler;
 import com.intellij.ui.SimpleTextAttributes;
@@ -80,6 +83,12 @@ public final class ReviewToursPanel extends JPanel {
     private static final String SHOW_DETAILS_KEY = "de.setsoftware.reviewtool.showStopDetails";
 
     private static final SimpleTextAttributes ACTIVE_TOUR_ATTRIBUTES = SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES;
+    private static final SimpleTextAttributes HIGH_RISK_ATTRIBUTES = new SimpleTextAttributes(
+            SimpleTextAttributes.STYLE_SMALLER | SimpleTextAttributes.STYLE_BOLD,
+            new JBColor(new Color(0xC7, 0x22, 0x22), new Color(0xFF, 0x6B, 0x68)));
+    private static final SimpleTextAttributes MEDIUM_RISK_ATTRIBUTES = new SimpleTextAttributes(
+            SimpleTextAttributes.STYLE_SMALLER,
+            new JBColor(new Color(0xB0, 0x6A, 0x00), new Color(0xE0, 0xA0, 0x40)));
 
     /**
      * Tree node payload for a tour.
@@ -128,6 +137,9 @@ public final class ReviewToursPanel extends JPanel {
     private Consumer<Stop> addRemarkListener;
     private Consumer<Stop> explainListener;
     private Runnable progressListener;
+    /** The risks of the stops as rated by the AI, for the tours {@link #aiRiskTours}. */
+    private Map<Stop, ReviewAiPrompts.StopRisk> aiRisks = Collections.emptyMap();
+    private ToursInReview aiRiskTours;
     private int lastNotVisitedCount = -1;
     private boolean hideIrrelevant;
     private boolean hideChecked;
@@ -337,6 +349,13 @@ public final class ReviewToursPanel extends JPanel {
         if (tour != null) {
             sb.append(" &nbsp;&middot; Tour: ").append(escape(firstLine(tour.getDescription())));
         }
+        final ReviewAiPrompts.StopRisk risk = this.getAiRisk(stop);
+        if (risk != null) {
+            sb.append(" &nbsp;&middot; AI: ").append(risk.getRisk()).append(" risk");
+            if (!risk.getReason().isEmpty()) {
+                sb.append(" (").append(escape(risk.getReason())).append(')');
+            }
+        }
         return sb.append("</html>").toString();
     }
 
@@ -475,6 +494,24 @@ public final class ReviewToursPanel extends JPanel {
      */
     ViewStatistics getStatistics() {
         return this.statistics;
+    }
+
+    /**
+     * Shows the risks of the stops as rated by the AI (they are only shown as long as the given tours
+     * are shown).
+     */
+    void setAiRisks(ToursInReview ratedTours, Map<Stop, ReviewAiPrompts.StopRisk> risks) {
+        this.aiRiskTours = ratedTours;
+        this.aiRisks = risks;
+        this.tree.repaint();
+        this.updateDetails();
+    }
+
+    /**
+     * Returns the risk of the stop as rated by the AI, or null if it has not been rated.
+     */
+    ReviewAiPrompts.StopRisk getAiRisk(Stop stop) {
+        return this.aiRiskTours != null && this.aiRiskTours == this.tours ? this.aiRisks.get(stop) : null;
     }
 
     /**
@@ -966,7 +1003,15 @@ public final class ReviewToursPanel extends JPanel {
                     state.append(", irrelevant");
                 }
                 this.append(state.toString(), SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
-                this.setToolTipText(stop.getAbsoluteFile().getPath());
+                final ReviewAiPrompts.StopRisk risk = ReviewToursPanel.this.getAiRisk(stop);
+                // only the stops that need particular attention stand out, the rating is in the tooltip
+                if (risk != null && !"low".equals(risk.getRisk())) {
+                    this.append("  AI: " + risk.getRisk() + " risk",
+                            risk.isHigh() ? HIGH_RISK_ATTRIBUTES : MEDIUM_RISK_ATTRIBUTES);
+                }
+                this.setToolTipText(risk == null ? stop.getAbsoluteFile().getPath()
+                        : "<html>" + escape(stop.getAbsoluteFile().getPath()) + "<br>AI: " + risk.getRisk() + " risk"
+                        + (risk.getReason().isEmpty() ? "" : " - " + escape(risk.getReason())) + "</html>");
             }
         }
     }

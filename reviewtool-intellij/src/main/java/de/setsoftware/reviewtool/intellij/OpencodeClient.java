@@ -56,14 +56,27 @@ final class OpencodeClient {
     static final class Answer {
         private final String text;
         private final String model;
+        private final JsonObject structured;
 
         Answer(String text, String model) {
+            this(text, model, null);
+        }
+
+        Answer(String text, String model, JsonObject structured) {
             this.text = text;
             this.model = model;
+            this.structured = structured;
         }
 
         String getText() {
             return this.text;
+        }
+
+        /**
+         * The answer in the requested JSON format (only for {@link OpencodeClient#promptStructured}).
+         */
+        JsonObject getStructured() {
+            return this.structured;
         }
 
         /**
@@ -75,9 +88,10 @@ final class OpencodeClient {
     }
 
     /**
-     * The tools the model may use in the sessions: only reading and searching the project's files.
+     * The tools the model may use in the sessions: only reading and searching the project's files, and
+     * the tool opencode provides for answers in a given JSON format.
      */
-    private static final String[] ALLOWED_TOOLS = {"read", "grep", "glob", "list"};
+    private static final String[] ALLOWED_TOOLS = {"read", "grep", "glob", "list", "StructuredOutput"};
 
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
     private static final Duration SHORT_TIMEOUT = Duration.ofSeconds(30);
@@ -159,9 +173,30 @@ final class OpencodeClient {
      * @return The answer.
      */
     Answer prompt(String sessionId, String system, String text, BooleanSupplier canceled) {
+        return answer(sessionId, this.sendPrompt(sessionId, system, text, null, canceled));
+    }
+
+    /**
+     * Sends the text to the session and waits for an answer in the JSON format described by the schema
+     * (opencode lets the model answer with a tool call whose parameters are this schema).
+     *
+     * @return The answer, with the object matching the schema in {@link Answer#getStructured()}.
+     */
+    Answer promptStructured(String sessionId, String system, String text, JsonObject schema,
+            BooleanSupplier canceled) {
+        final JsonObject format = new JsonObject().add("type", "json_schema").add("schema", schema)
+                .add("retryCount", 2);
+        return structuredAnswer(sessionId, this.sendPrompt(sessionId, system, text, format, canceled));
+    }
+
+    private JsonValue sendPrompt(String sessionId, String system, String text, JsonObject format,
+            BooleanSupplier canceled) {
         final JsonObject body = new JsonObject()
                 .add("system", system)
                 .add("parts", new JsonArray().add(new JsonObject().add("type", "text").add("text", text)));
+        if (format != null) {
+            body.add("format", format);
+        }
         final CompletableFuture<HttpResponse<String>> future = this.http.sendAsync(
                 this.request("POST", "/session/" + sessionId + "/message", body, PROMPT_TIMEOUT),
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
@@ -172,7 +207,7 @@ final class OpencodeClient {
             this.abortQuietly(sessionId);
             throw e;
         }
-        return answer(sessionId, this.parse("POST", "/session/.../message", response));
+        return this.parse("POST", "/session/.../message", response);
     }
 
     private static HttpResponse<String> waitFor(CompletableFuture<HttpResponse<String>> future,
@@ -220,9 +255,31 @@ final class OpencodeClient {
         if (text.toString().trim().isEmpty()) {
             throw new OpencodeException("The model did not answer (session " + sessionId + ").", false, null);
         }
+        return new Answer(text.toString().trim(), model(info));
+    }
+
+    private static String model(JsonObject info) {
         final String provider = info.getString("providerID", null);
         final String model = info.getString("modelID", null);
-        return new Answer(text.toString().trim(), provider == null || model == null ? model : provider + "/" + model);
+        return provider == null || model == null ? model : provider + "/" + model;
+    }
+
+    /**
+     * Extracts the JSON answer of a structured prompt or throws an exception with the error opencode
+     * reported.
+     */
+    static Answer structuredAnswer(String sessionId, JsonValue answer) {
+        final JsonObject info = answer.asObject().get("info").asObject();
+        final JsonValue error = info.get("error");
+        if (error != null && error.isObject()) {
+            throw modelError(error.asObject());
+        }
+        final JsonValue structured = info.get("structured");
+        if (structured == null || !structured.isObject()) {
+            throw new OpencodeException("The model did not answer in the expected format (session " + sessionId
+                    + ").", false, null);
+        }
+        return new Answer("", model(info), structured.asObject());
     }
 
     private static OpencodeException modelError(JsonObject error) {
@@ -236,6 +293,10 @@ final class OpencodeClient {
                     true, null);
         case "MessageAbortedError":
             return new OpencodeException("The answer has been aborted.", false, null);
+        case "StructuredOutputError":
+            return new OpencodeException("The model did not answer in the expected format (" + message
+                    + "). Some models cannot answer in a given format; try another model in the opencode"
+                    + " configuration.", false, null);
         case "ContextOverflowError":
             return new OpencodeException("The changes are too big for the model's context window (" + message
                     + "). Try a model with a bigger context window in the opencode configuration.", false, null);

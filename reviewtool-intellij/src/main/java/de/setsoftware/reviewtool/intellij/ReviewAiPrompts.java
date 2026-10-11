@@ -1,7 +1,17 @@
 package de.setsoftware.reviewtool.intellij;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+
+import com.eclipsesource.json.JsonArray;
+import com.eclipsesource.json.JsonObject;
+import com.eclipsesource.json.JsonValue;
 
 /**
  * The texts that are sent to the AI model (via opencode): the instructions, the changes of the review
@@ -38,6 +48,10 @@ final class ReviewAiPrompts {
             return this.number;
         }
 
+        String getPath() {
+            return this.path;
+        }
+
         String describe() {
             return "Stop " + this.number + ": " + this.path + (this.lines == null ? "" : ", lines " + this.lines);
         }
@@ -64,6 +78,93 @@ final class ReviewAiPrompts {
             return this.omittedDiffs;
         }
     }
+
+    /**
+     * A remark the model suggests, which the reviewer can accept (and edit) or reject.
+     */
+    static final class RemarkSuggestion {
+        private final int stop;
+        private final int line;
+        private final String kind;
+        private final String text;
+        private final String reason;
+
+        RemarkSuggestion(int stop, int line, String kind, String text, String reason) {
+            this.stop = stop;
+            this.line = line;
+            this.kind = kind;
+            this.text = text;
+            this.reason = reason;
+        }
+
+        int getStop() {
+            return this.stop;
+        }
+
+        /**
+         * The line in the current version of the file, or 0 if the remark is about the stop as a whole.
+         */
+        int getLine() {
+            return this.line;
+        }
+
+        /**
+         * One of {@link ReviewAiPrompts#REMARK_KINDS}.
+         */
+        String getKind() {
+            return this.kind;
+        }
+
+        String getText() {
+            return this.text;
+        }
+
+        String getReason() {
+            return this.reason;
+        }
+    }
+
+    /**
+     * The risk of a stop as rated by the model.
+     */
+    static final class StopRisk {
+        private final int stop;
+        private final String risk;
+        private final String reason;
+
+        StopRisk(int stop, String risk, String reason) {
+            this.stop = stop;
+            this.risk = risk;
+            this.reason = reason;
+        }
+
+        int getStop() {
+            return this.stop;
+        }
+
+        /**
+         * One of {@link ReviewAiPrompts#RISK_LEVELS}.
+         */
+        String getRisk() {
+            return this.risk;
+        }
+
+        String getReason() {
+            return this.reason;
+        }
+
+        boolean isHigh() {
+            return "high".equals(this.risk);
+        }
+    }
+
+    /** The kinds of remarks the model can suggest (in the order of the remark types of CoRT). */
+    static final List<String> REMARK_KINDS = Collections.unmodifiableList(
+            Arrays.asList("must", "can", "positive", "other"));
+
+    /** The risk levels, from the highest to the lowest. */
+    static final List<String> RISK_LEVELS = Collections.unmodifiableList(
+            Arrays.asList("high", "medium", "low"));
 
     /**
      * The maximum length of the description of the changes (the diffs of further stops are left out;
@@ -143,6 +244,166 @@ final class ReviewAiPrompts {
         return "Explain " + stop.describe() + " to the reviewer: what changes, why it was probably made, how it"
                 + " relates to the rest of the changes, and what to check carefully. Keep it under 200 words.\n\n"
                 + (stop.diff == null ? "(no textual diff)\n" : diffBlock(stop));
+    }
+
+    /**
+     * The request for remark suggestions (to be answered in the format of {@link #remarksSchema()}).
+     */
+    static String remarksRequest() {
+        return "Suggest review remarks for these changes: real problems the reviewer should report (bugs,"
+                + " missing error handling, security or concurrency issues, misleading names, missing tests)"
+                + " and, if deserved, positive feedback. Read the files if you need more context. Only suggest"
+                + " remarks you are confident about; no remarks on formatting or on code that has not been"
+                + " changed. Suggest at most 10 remarks; it is fine to suggest none.\n"
+                + "For each remark give the number of the stop, the line in the current version of the file"
+                + " (0 for the stop as a whole), the kind (\"must\": must be fixed, \"can\": could be improved,"
+                + " \"positive\": positive feedback, \"other\": e.g. a question), the text of the remark as the"
+                + " reviewer would write it to the author (one or two sentences) and a short reason for the"
+                + " reviewer.";
+    }
+
+    static JsonObject remarksSchema() {
+        final JsonObject remark = object()
+                .add("properties", new JsonObject()
+                        .add("stop", integer("The number of the stop"))
+                        .add("line", integer("The line in the current version of the file, 0 for the whole stop"))
+                        .add("kind", enumeration(REMARK_KINDS, "The kind of the remark"))
+                        .add("text", string("The remark for the author of the changes"))
+                        .add("reason", string("Why the remark is suggested, for the reviewer")))
+                .add("required", strings("stop", "line", "kind", "text", "reason"));
+        return object()
+                .add("properties", new JsonObject().add("remarks", new JsonObject().add("type", "array")
+                        .add("items", remark)))
+                .add("required", strings("remarks"));
+    }
+
+    /**
+     * Reads the remark suggestions from the answer. Suggestions for unknown stops or with an unknown kind
+     * or an empty text are left out.
+     */
+    static List<RemarkSuggestion> parseRemarks(JsonObject answer, Set<Integer> stops) {
+        final List<RemarkSuggestion> result = new ArrayList<>();
+        for (final JsonObject remark : objects(answer, "remarks")) {
+            final int stop = intValue(remark, "stop");
+            final String kind = stringValue(remark, "kind").toLowerCase(Locale.ROOT);
+            final String text = stringValue(remark, "text").trim();
+            if (stops.contains(stop) && REMARK_KINDS.contains(kind) && !text.isEmpty()) {
+                result.add(new RemarkSuggestion(stop, Math.max(0, intValue(remark, "line")), kind, text,
+                        stringValue(remark, "reason").trim()));
+            }
+        }
+        return result;
+    }
+
+    /**
+     * The request to rate the risk of the stops (to be answered in the format of {@link #risksSchema()}).
+     */
+    static String risksRequest() {
+        return "Rate the risk of each stop of these changes, so that the reviewer knows which stops need"
+                + " particular attention: \"high\" for changes that can easily break something (e.g. complex"
+                + " logic, concurrency, security, error handling, public interfaces, data formats),"
+                + " \"medium\" for changes of logic with a limited impact and \"low\" for simple or mechanical"
+                + " changes (e.g. renamings, formatting, comments). Give a short reason for each rating"
+                + " (at most 15 words). Rate every stop.";
+    }
+
+    static JsonObject risksSchema() {
+        final JsonObject risk = object()
+                .add("properties", new JsonObject()
+                        .add("stop", integer("The number of the stop"))
+                        .add("risk", enumeration(RISK_LEVELS, "The risk of the stop"))
+                        .add("reason", string("A short reason for the rating")))
+                .add("required", strings("stop", "risk", "reason"));
+        return object()
+                .add("properties", new JsonObject().add("stops", new JsonObject().add("type", "array")
+                        .add("items", risk)))
+                .add("required", strings("stops"));
+    }
+
+    /**
+     * Reads the risks of the stops from the answer, sorted by risk (the highest first) and stop number.
+     * Ratings of unknown stops or with an unknown risk are left out, as well as further ratings of the
+     * same stop.
+     */
+    static List<StopRisk> parseRisks(JsonObject answer, Set<Integer> stops) {
+        final List<StopRisk> result = new ArrayList<>();
+        final Set<Integer> seen = new HashSet<>();
+        for (final JsonObject rating : objects(answer, "stops")) {
+            final int stop = intValue(rating, "stop");
+            final String risk = stringValue(rating, "risk").toLowerCase(Locale.ROOT);
+            if (stops.contains(stop) && RISK_LEVELS.contains(risk) && seen.add(stop)) {
+                result.add(new StopRisk(stop, risk, stringValue(rating, "reason").trim()));
+            }
+        }
+        result.sort(Comparator.comparingInt((StopRisk r) -> RISK_LEVELS.indexOf(r.risk))
+                .thenComparingInt(r -> r.stop));
+        return result;
+    }
+
+    /**
+     * Returns the number of entries in the array with the given name in the answer.
+     */
+    static int count(JsonObject answer, String name) {
+        return objects(answer, name).size();
+    }
+
+    private static JsonObject object() {
+        return new JsonObject().add("type", "object");
+    }
+
+    private static JsonObject integer(String description) {
+        return new JsonObject().add("type", "integer").add("description", description);
+    }
+
+    private static JsonObject string(String description) {
+        return new JsonObject().add("type", "string").add("description", description);
+    }
+
+    private static JsonObject enumeration(List<String> values, String description) {
+        final JsonArray array = new JsonArray();
+        values.forEach(array::add);
+        return string(description).add("enum", array);
+    }
+
+    private static JsonArray strings(String... values) {
+        final JsonArray array = new JsonArray();
+        for (final String value : values) {
+            array.add(value);
+        }
+        return array;
+    }
+
+    private static List<JsonObject> objects(JsonObject answer, String name) {
+        final List<JsonObject> result = new ArrayList<>();
+        final JsonValue array = answer.get(name);
+        if (array != null && array.isArray()) {
+            for (final JsonValue value : array.asArray()) {
+                if (value.isObject()) {
+                    result.add(value.asObject());
+                }
+            }
+        }
+        return result;
+    }
+
+    private static int intValue(JsonObject object, String name) {
+        final JsonValue value = object.get(name);
+        if (value != null && value.isNumber()) {
+            return (int) value.asDouble();
+        }
+        if (value != null && value.isString()) {
+            try {
+                return Integer.parseInt(value.asString().trim());
+            } catch (final NumberFormatException e) {
+                return -1;
+            }
+        }
+        return -1;
+    }
+
+    private static String stringValue(JsonObject object, String name) {
+        final JsonValue value = object.get(name);
+        return value != null && value.isString() ? value.asString() : "";
     }
 
 }

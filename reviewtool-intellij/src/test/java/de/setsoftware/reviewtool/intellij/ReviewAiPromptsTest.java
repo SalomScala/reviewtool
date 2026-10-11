@@ -5,12 +5,18 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 
 import org.junit.Test;
 
+import com.eclipsesource.json.Json;
+import com.eclipsesource.json.JsonObject;
+
 import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.Context;
+import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.RemarkSuggestion;
+import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.StopRisk;
 import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.StopForAi;
 
 /**
@@ -90,6 +96,58 @@ public class ReviewAiPromptsTest {
         assertEquals("<p>See <a href='stop:4:3'>Stop 3</a> and <a href='stop:4:1'>stop 1</a>, not Stop 9 or Stop 30.</p>",
                 ReviewAiPanel.linkStops("<p>See Stop 3 and stop 1, not Stop 9 or Stop 30.</p>",
                         new java.util.HashSet<>(Arrays.asList(1, 3)), 4));
+    }
+
+    @Test
+    public void testRemarkSuggestions() {
+        assertTrue(ReviewAiPrompts.remarksRequest().startsWith("Suggest review remarks"));
+        final JsonObject schema = ReviewAiPrompts.remarksSchema();
+        final JsonObject item = schema.get("properties").asObject().get("remarks").asObject().get("items").asObject();
+        assertEquals(Json.array("must", "can", "positive", "other"),
+                item.get("properties").asObject().get("kind").asObject().get("enum"));
+        assertEquals(Json.array("stop", "line", "kind", "text", "reason"), item.get("required"));
+
+        final List<RemarkSuggestion> remarks = ReviewAiPrompts.parseRemarks(Json.parse("{\"remarks\":["
+                + "{\"stop\":3,\"line\":36,\"kind\":\"must\",\"text\":\" Check for null \",\"reason\":\"NPE\"},"
+                + "{\"stop\":\"1\",\"line\":-4,\"kind\":\"Positive\",\"text\":\"Nice\"},"
+                + "{\"stop\":99,\"line\":1,\"kind\":\"must\",\"text\":\"unknown stop\",\"reason\":\"\"},"
+                + "{\"stop\":1,\"line\":1,\"kind\":\"blocker\",\"text\":\"unknown kind\",\"reason\":\"\"},"
+                + "{\"stop\":1,\"line\":1,\"kind\":\"can\",\"text\":\" \",\"reason\":\"empty\"},"
+                + "\"no object\"]}").asObject(), new HashSet<>(Arrays.asList(1, 3)));
+        assertEquals(2, remarks.size());
+        assertEquals(3, remarks.get(0).getStop());
+        assertEquals(36, remarks.get(0).getLine());
+        assertEquals("must", remarks.get(0).getKind());
+        assertEquals("Check for null", remarks.get(0).getText());
+        assertEquals("NPE", remarks.get(0).getReason());
+        assertEquals(1, remarks.get(1).getStop());
+        assertEquals(0, remarks.get(1).getLine());
+        assertEquals("positive", remarks.get(1).getKind());
+        assertEquals("", remarks.get(1).getReason());
+        assertTrue(ReviewAiPrompts.parseRemarks(new JsonObject(), new HashSet<>(Arrays.asList(1))).isEmpty());
+    }
+
+    @Test
+    public void testRisks() {
+        assertTrue(ReviewAiPrompts.risksRequest().startsWith("Rate the risk of each stop"));
+        final List<StopRisk> risks = ReviewAiPrompts.parseRisks(Json.parse("{\"stops\":["
+                + "{\"stop\":1,\"risk\":\"low\",\"reason\":\"comment\"},"
+                + "{\"stop\":3,\"risk\":\"medium\",\"reason\":\"loop\"},"
+                + "{\"stop\":2,\"risk\":\"HIGH\",\"reason\":\"locking\"},"
+                + "{\"stop\":2,\"risk\":\"low\",\"reason\":\"second rating\"},"
+                + "{\"stop\":4,\"risk\":\"high\",\"reason\":\"unknown stop\"},"
+                + "{\"stop\":5,\"risk\":\"critical\",\"reason\":\"unknown risk\"}]}").asObject(),
+                new HashSet<>(Arrays.asList(1, 2, 3, 5)));
+        assertEquals(3, risks.size());
+        assertEquals(2, risks.get(0).getStop());
+        assertTrue(risks.get(0).isHigh());
+        assertEquals("locking", risks.get(0).getReason());
+        assertEquals(3, risks.get(1).getStop());
+        assertEquals("medium", risks.get(1).getRisk());
+        assertEquals(1, risks.get(2).getStop());
+        assertEquals(Json.array("high", "medium", "low"), ReviewAiPrompts.risksSchema().get("properties").asObject()
+                .get("stops").asObject().get("items").asObject().get("properties").asObject().get("risk").asObject()
+                .get("enum"));
     }
 
 }
