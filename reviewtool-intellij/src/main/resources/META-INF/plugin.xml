@@ -40,11 +40,15 @@
         <action id="de.setsoftware.reviewtool.intellij.AddReviewRemarkAction"
                 class="de.setsoftware.reviewtool.intellij.CortActions$AddRemark"
                 text="Add Review Remark (CoRT)..."
+                icon="AllIcons.General.Add"
                 description="Adds a CoRT review remark at the caret / right-clicked line, prefilled with the selected text">
             <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt 4"/>
             <keyboard-shortcut keymap="Default for XWin" first-keystroke="ctrl alt 4" remove="true"/>
             <keyboard-shortcut keymap="Default for XWin" first-keystroke="ctrl alt shift 4"/>
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <!-- in the diff of a review stop (both sides; the line is mapped to the current file) -->
+            <add-to-group group-id="Diff.EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="Diff.EditorGutterPopupMenu" anchor="last"/>
         </action>
         <action id="de.setsoftware.reviewtool.intellij.JumpToNextAction"
                 class="de.setsoftware.reviewtool.intellij.CortActions$JumpToNext"

@@ -1,11 +1,18 @@
 package de.setsoftware.reviewtool.intellij;
 
+import java.util.List;
 import java.util.function.Consumer;
 
+import com.intellij.diff.contents.DiffContent;
+import com.intellij.diff.contents.DocumentContent;
+import com.intellij.diff.requests.ContentDiffRequest;
+import com.intellij.diff.requests.DiffRequest;
+import com.intellij.diff.tools.util.DiffDataKeys;
 import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.CommonDataKeys;
 import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.editor.ex.EditorGutterComponentEx;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.DumbAwareAction;
 import com.intellij.openapi.project.Project;
@@ -210,16 +217,56 @@ public final class CortActions {
 
     /**
      * Adds a review remark at the caret line (or right-clicked line) of the editor, prefilled with
-     * the selected text. Without an editor, a global remark is added.
+     * the selected text. In the diff of a review stop, the line of either side of the diff is mapped
+     * to the current file (a line on the left side to the place where it has been changed or
+     * deleted). Without an editor, a global remark is added.
      */
     public static final class AddRemark extends PanelAction {
         @Override
         protected Consumer<ReviewToolPanel> createTask(AnActionEvent e) {
+            final Consumer<ReviewToolPanel> inStopDiff = createTaskForStopDiff(e);
+            if (inStopDiff != null) {
+                return inStopDiff;
+            }
             final EditorPosition pos = EditorPosition.of(e);
             if (pos == null) {
                 return (panel) -> panel.addRemarkAt(null, 0, "");
             }
             return (panel) -> panel.addRemarkAt(pos.file, pos.line, pos.selectedText);
+        }
+
+        private static Consumer<ReviewToolPanel> createTaskForStopDiff(AnActionEvent e) {
+            final DiffRequest request = e.getData(DiffDataKeys.DIFF_REQUEST);
+            final StopDiffViewer.StopDiffTarget target =
+                    request == null ? null : request.getUserData(StopDiffViewer.STOP_DIFF_TARGET);
+            if (target == null) {
+                return null;
+            }
+            Editor editor = e.getData(CommonDataKeys.EDITOR);
+            if (editor == null) {
+                editor = e.getData(DiffDataKeys.CURRENT_EDITOR);
+            }
+            if (editor == null) {
+                return (panel) -> panel.addRemarkForStop(target.getStop());
+            }
+            final Integer gutterLine = e.getData(EditorGutterComponentEx.LOGICAL_LINE_AT_CURSOR);
+            final int diffLine = gutterLine != null ? gutterLine : editor.getCaretModel().getLogicalPosition().line;
+            final int line = target.toFileLine(!isLeftSide(request, editor), diffLine);
+            final String selected = editor.getSelectionModel().getSelectedText();
+            final VirtualFile file = IntellijFileResolver.findByAbsoluteFile(target.getStop().getAbsoluteFile());
+            if (file == null) {
+                return (panel) -> panel.addRemarkForStop(target.getStop());
+            }
+            return (panel) -> panel.addRemarkAt(file, line, selected == null ? "" : selected);
+        }
+
+        private static boolean isLeftSide(DiffRequest request, Editor editor) {
+            if (!(request instanceof ContentDiffRequest)) {
+                return false;
+            }
+            final List<DiffContent> contents = ((ContentDiffRequest) request).getContents();
+            return !contents.isEmpty() && contents.get(0) instanceof DocumentContent
+                    && ((DocumentContent) contents.get(0)).getDocument() == editor.getDocument();
         }
     }
 

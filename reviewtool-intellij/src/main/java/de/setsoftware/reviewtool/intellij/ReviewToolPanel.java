@@ -10,6 +10,9 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -42,6 +45,7 @@ import com.intellij.openapi.actionSystem.ActionManager;
 import com.intellij.openapi.actionSystem.ActionToolbar;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.PathManager;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
@@ -179,6 +183,18 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     private String toursKey;
     /** The tours of the working ticket, put aside while another ticket is shown (or null). */
     private ToursInReview parkedWorkingTours;
+    /** The choices made when the shown tours were created (tour structure, irrelevant classifications). */
+    private IntellijCreateToursUi toursChoices;
+    /** The choices made when the parked tours were created. */
+    private IntellijCreateToursUi parkedToursChoices;
+    /**
+     * The ticket the view statistics (viewed lines, checked stops) belong to. The saved progress is
+     * only restored if they do not belong to the working ticket already.
+     */
+    private String statisticsKey;
+    /** Saves the review progress shortly after it changed (not on every scrolled line). */
+    private final Timer progressSaveTimer;
+    private boolean continueReviewOffered;
     /** The tickets for which restoring unsaved remarks has already been offered in this session. */
     private final Set<String> unsavedRemarksOffered = new LinkedHashSet<>();
     private String savedRemarks = "";
@@ -199,6 +215,9 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         this.remarksPanel = new ReviewRemarksPanel(project, this.remarksModel);
         this.toursPanel.setAllStopsVisitedListener(this::allStopsVisited);
         this.toursPanel.setAddRemarkListener(this::addRemarkForStop);
+        this.toursPanel.setProgressListener(this::progressChanged);
+        this.progressSaveTimer = new Timer(3000, (e) -> this.saveProgress(false));
+        this.progressSaveTimer.setRepeats(false);
         this.remarksModel.addListener(() -> {
             if (this.remarkMarkersShown) {
                 this.renderRemarkMarkers();
@@ -218,6 +237,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
             // show the tickets right away when the tool window is opened
             ApplicationManager.getApplication().invokeLater(this::refreshTickets);
         }
+        ApplicationManager.getApplication().invokeLater(this::offerToContinueUnfinishedReview);
     }
 
     private void buildUi() {
@@ -526,7 +546,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         group.add(PanelActions.action("Review Commits without Ticket...", AllIcons.Vcs.History, () -> true,
                 this::reviewSelectedCommits));
         group.add(PanelActions.action("Create Tours", AllIcons.Actions.ShowAsTree,
-                () -> this.lastLoadedChanges != null, this::createToursForLoadedChanges));
+                () -> this.lastLoadedChanges != null, () -> this.createToursForLoadedChanges(false)));
         group.addSeparator();
         group.add(PanelActions.action("Add Remark at Cursor...", AllIcons.General.Add, () -> true,
                 this::addRemarkAtCursor));
@@ -587,6 +607,8 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     @Override
     public void dispose() {
         this.reparseTimer.stop();
+        this.progressSaveTimer.stop();
+        this.saveProgress(true);
         this.toursPanel.dispose();
         this.markerFactory.clearReviewMarkers();
         this.markerFactory.clearStopMarkers();
@@ -1070,6 +1092,11 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         if (key == null) {
             return;
         }
+        if (this.workingOnKey != null && !this.workingOnKey.equals(key)) {
+            // only one review/fixing at a time: the tours, the progress and the markers belong to it
+            this.offerToShowWorkingTicket("End (or pause) it before starting to work on " + key + ".");
+            return;
+        }
         final boolean review = !this.isFixingMode();
         // the ticket is reloaded after the start, so unsaved remark changes are saved first
         final String remarksToSave = key.equals(this.currentTicketKey) && this.remarksDirty
@@ -1112,7 +1139,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         this.setTicketListVisible(false);
         this.updateModeBoxEnabled();
         if (review) {
-            this.loadDetails(key, () -> this.createToursForLoadedChanges());
+            this.loadDetails(key, () -> this.createToursForLoadedChanges(true));
         } else {
             this.loadDetails(key, () -> {
                 this.rightTabs.setSelectedIndex(TAB_REMARKS);
@@ -1157,12 +1184,20 @@ public class ReviewToolPanel extends JPanel implements Disposable {
      */
     private void workEnded(boolean finished) {
         if (finished) {
+            if (this.workingOnKey != null) {
+                this.deleteProgress(this.workingOnKey);
+            }
             PropertiesComponent.getInstance(this.project).unsetValue(UNFINISHED_TICKET_KEY);
             // the state of the ticket changed
             this.refreshCurrentTicketInfo();
+        } else {
+            this.saveProgress(true);
         }
+        this.progressSaveTimer.stop();
         this.workingOnKey = null;
         this.parkedWorkingTours = null;
+        this.parkedToursChoices = null;
+        this.statisticsKey = null;
         this.setTicketListVisible(true);
         this.updateModeBoxEnabled();
         this.updateCurrentTicketLabel();
@@ -1177,6 +1212,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
             if (this.toursKey != null && this.toursKey.equals(this.workingOnKey)) {
                 // only a look at another ticket: the tours (and the progress) of the review must not get lost
                 this.parkedWorkingTours = this.toursPanel.getTours();
+                this.parkedToursChoices = this.toursChoices;
             }
             this.toursKey = null;
             this.toursPanel.setTours(null);
@@ -1184,9 +1220,11 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         }
         if (this.parkedWorkingTours != null && key.equals(this.workingOnKey)) {
             this.toursKey = key;
+            this.toursChoices = this.parkedToursChoices;
             this.toursPanel.setTours(this.parkedWorkingTours);
             this.summaryPanel.setTours(this.parkedWorkingTours);
             this.parkedWorkingTours = null;
+            this.parkedToursChoices = null;
         }
     }
 
@@ -1231,12 +1269,21 @@ public class ReviewToolPanel extends JPanel implements Disposable {
      * show that ticket (so that its review/fixing can be ended).
      */
     private void offerToShowWorkingTicket() {
+        final String what = this.isFixingMode() ? "fixing" : "review";
+        this.offerToShowWorkingTicket(this.currentTicketKey + " is only shown. Show " + this.workingOnKey
+                + " to end its " + what + "?");
+    }
+
+    /**
+     * Explains that the review/fixing of another ticket is running (with the given explanation) and
+     * offers to show that ticket.
+     */
+    private void offerToShowWorkingTicket(String explanation) {
         final String working = this.workingOnKey;
         final String what = this.isFixingMode() ? "fixing" : "review";
         final int answer = Messages.showYesNoDialog(this.project,
-                "The " + what + " of " + working + " is in progress, " + this.currentTicketKey
-                        + " is only shown. Show " + working + " to end its " + what + "?",
-                this.isFixingMode() ? "End Fixing" : "End Review",
+                "The " + what + " of " + working + " is in progress. " + explanation,
+                "Code Review Tool",
                 "Show " + working, "Cancel", Messages.getQuestionIcon());
         if (answer == Messages.YES && this.confirmDiscardUnsavedRemarks()) {
             this.selectTicketSilently(working);
@@ -1488,27 +1535,40 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     /**
      * Builds the review tours for the changes loaded last and shows them in the "Tours" tab.
      */
-    private void createToursForLoadedChanges() {
+    /**
+     * Creates the review tours for the loaded changes in the background.
+     *
+     * @param continueReview True if the tours are created for the review of the working ticket: if
+     *      there is saved progress of the current review round, the choices made back then are used
+     *      (instead of asking again) and the progress is restored.
+     */
+    private void createToursForLoadedChanges(boolean continueReview) {
         final IChangeData changes = this.lastLoadedChanges;
         if (changes == null) {
             IntellijNotifications.info(this.project, "Please select a ticket first so that its changes can be loaded.");
             return;
         }
         final String key = this.lastLoadedKey;
+        final ReviewProgress saved = continueReview ? this.loadProgressOfCurrentRound(key) : null;
+        final IntellijCreateToursUi choices = saved == null
+                ? new IntellijCreateToursUi(this.project)
+                : new IntellijCreateToursUi(this.project, saved.getTourStructure(), saved.getIrrelevantClassifications());
         new Task.Backgroundable(this.project, "Creating review tours for " + key, true) {
             @Override
             public void run(ProgressIndicator indicator) {
                 try {
                     final ToursInReview tours = ReviewToolPanel.this.getService().createTours(
-                            changes, new ChangeSourceUiAdapter(ReviewToolPanel.this.project, indicator));
+                            changes, new ChangeSourceUiAdapter(ReviewToolPanel.this.project, indicator), choices);
                     if (tours == null) {
                         return;
                     }
                     ApplicationManager.getApplication().invokeLater(() -> {
                         ReviewToolPanel.this.toursKey = key;
+                        ReviewToolPanel.this.toursChoices = choices;
                         ReviewToolPanel.this.toursPanel.setTours(tours);
                         ReviewToolPanel.this.summaryPanel.setTours(tours);
                         ReviewToolPanel.this.rightTabs.setSelectedIndex(TAB_TOURS);
+                        ReviewToolPanel.this.toursCreated(key, tours, saved);
                     });
                 } catch (final ProcessCanceledException e) {
                     throw e;
@@ -1517,6 +1577,148 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                 }
             }
         }.queue();
+    }
+
+    /**
+     * Called on the EDT after new tours have been created: restores the saved progress of the review
+     * (if the tours belong to the working ticket and there is saved progress that has not been
+     * applied yet).
+     */
+    private void toursCreated(String key, ToursInReview tours, ReviewProgress saved) {
+        if (this.isFixingMode() || !key.equals(this.workingOnKey)) {
+            return;
+        }
+        if (saved != null && !key.equals(this.statisticsKey)) {
+            final int checked = saved.applyTo(this.toursPanel.getStatistics(), tours);
+            if (checked > 0 || saved.hasViews()) {
+                IntellijNotifications.info(this.project, "The progress of the review of " + key
+                        + " has been restored (viewed lines" + (checked > 0 ? ", " + checked + " checked stop(s)" : "")
+                        + ").");
+            }
+        }
+        this.statisticsKey = key;
+        this.saveProgress(false);
+    }
+
+    /**
+     * Returns the saved progress of the review of the given ticket if it belongs to the current review
+     * round (saved progress of an older round is deleted).
+     */
+    private ReviewProgress loadProgressOfCurrentRound(String key) {
+        final ReviewProgress saved = ReviewProgress.load(this.progressFile(key));
+        // without the remarks, the current round is unknown (and the progress must not be deleted)
+        if (saved != null && this.remarksLoaded && saved.getRound() != this.currentRound) {
+            this.deleteProgress(key);
+            return null;
+        }
+        return saved;
+    }
+
+    /**
+     * The file the progress of the review of the given ticket is saved in (in the IDE's system
+     * directory, separately for each project).
+     */
+    private Path progressFile(String key) {
+        return PathManager.getSystemDir().resolve("cort-review-progress").resolve(this.project.getLocationHash())
+                .resolve(key.replaceAll("[^A-Za-z0-9_.-]", "_") + ".properties");
+    }
+
+    private boolean isProgressToBeSaved() {
+        return !this.isFixingMode() && this.workingOnKey != null && this.workingOnKey.equals(this.toursKey)
+                && this.workingOnKey.equals(this.statisticsKey) && this.toursPanel.hasTours();
+    }
+
+    private void progressChanged() {
+        if (this.isProgressToBeSaved() && !this.progressSaveTimer.isRunning()) {
+            this.progressSaveTimer.start();
+        }
+    }
+
+    /**
+     * Saves the progress of the running review (if there is one).
+     *
+     * @param synchronous True to write the file right away (e.g. when the IDE is closed), otherwise
+     *      it is written in the background.
+     */
+    private void saveProgress(boolean synchronous) {
+        if (!this.isProgressToBeSaved()) {
+            return;
+        }
+        final IntellijCreateToursUi choices = this.toursChoices;
+        final ReviewProgress progress = ReviewProgress.capture(this.currentRound,
+                choices == null ? null : choices.getChosenTourStructure(),
+                choices == null ? null : choices.getChosenIrrelevant(),
+                this.toursPanel.getStatistics(), this.toursPanel.getTours());
+        final Path file = this.progressFile(this.workingOnKey);
+        final Runnable write = () -> {
+            try {
+                progress.save(file);
+            } catch (final IOException e) {
+                Logger.warn("could not save the review progress to " + file, e);
+            }
+        };
+        if (synchronous) {
+            write.run();
+        } else {
+            ApplicationManager.getApplication().executeOnPooledThread(write);
+        }
+    }
+
+    private void deleteProgress(String key) {
+        final Path file = this.progressFile(key);
+        try {
+            Files.deleteIfExists(file);
+        } catch (final IOException e) {
+            Logger.warn("could not delete the saved review progress " + file, e);
+        }
+    }
+
+    /**
+     * When the IDE was closed (or the review paused) during a review, offers to continue it where
+     * the reviewer left off.
+     */
+    private void offerToContinueUnfinishedReview() {
+        if (this.continueReviewOffered || this.workingOnKey != null) {
+            return;
+        }
+        this.continueReviewOffered = true;
+        final String stored = PropertiesComponent.getInstance(this.project).getValue(UNFINISHED_TICKET_KEY, "");
+        final String prefix = ReviewToolService.FILTER_REVIEW + ":";
+        if (!stored.startsWith(prefix)) {
+            return;
+        }
+        final String key = stored.substring(prefix.length());
+        if (key.isEmpty() || !Files.isRegularFile(this.progressFile(key))) {
+            return;
+        }
+        IntellijNotifications.info(this.project, "The review of " + key + " has not been finished."
+                + " Continue it where you left off?", "Continue review", () -> this.continueReview(key));
+    }
+
+    /**
+     * Continues the unfinished review of the given ticket (without changing the ticket's state): shows
+     * the ticket, creates the same tours as before and restores the progress.
+     */
+    void continueReview(String key) {
+        if (this.workingOnKey != null) {
+            if (!this.workingOnKey.equals(key)) {
+                this.offerToShowWorkingTicket();
+            }
+            return;
+        }
+        if (!this.confirmDiscardUnsavedRemarks()) {
+            return;
+        }
+        if (this.isFixingMode()) {
+            this.modeBox.setSelectedItem(ReviewToolService.FILTER_REVIEW);
+        }
+        this.workingOnKey = key;
+        this.parkedWorkingTours = null;
+        this.parkedToursChoices = null;
+        this.setTicketListVisible(false);
+        this.updateModeBoxEnabled();
+        this.selectTicketSilently(key);
+        this.loadDetails(key, () -> this.createToursForLoadedChanges(true));
     }
 
     /**
@@ -1588,7 +1790,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                         ReviewToolPanel.this.rightTabs.setSelectedIndex(TAB_CHANGES);
                         IntellijNotifications.info(ReviewToolPanel.this.project, "Loaded the changes of "
                                 + revisionIds.size() + " commit(s).", "Create review tours",
-                                ReviewToolPanel.this::createToursForLoadedChanges);
+                                () -> ReviewToolPanel.this.createToursForLoadedChanges(false));
                     });
                 } catch (final ProcessCanceledException e) {
                     throw e;

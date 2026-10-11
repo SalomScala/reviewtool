@@ -167,6 +167,30 @@ final class StopDiffExcerpt {
     }
 
     /**
+     * Maps a (0-based) line of the old text to the corresponding line of the new text: unchanged lines
+     * are shifted by the preceding changes, a changed line is mapped to the line at the same offset in
+     * the replacement (or its last line), a deleted line to the line where it has been deleted.
+     *
+     * @param changes The changes between the old and the new text, sorted by position.
+     */
+    static int oldToNewLine(List<Change> changes, int oldLine) {
+        int delta = 0;
+        for (final Change c : changes) {
+            if (oldLine < c.oldStart) {
+                break;
+            }
+            if (oldLine < c.oldEnd) {
+                if (c.newEnd > c.newStart) {
+                    return c.newStart + Math.min(oldLine - c.oldStart, c.newEnd - c.newStart - 1);
+                }
+                return c.newStart;
+            }
+            delta = c.newEnd - c.oldEnd;
+        }
+        return oldLine + delta;
+    }
+
+    /**
      * Returns the (0-based) line in the new excerpt that shows the given line of the new file, or the
      * nearest line after it.
      */

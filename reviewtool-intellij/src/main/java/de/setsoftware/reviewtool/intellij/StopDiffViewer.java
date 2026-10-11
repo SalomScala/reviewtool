@@ -3,6 +3,7 @@ package de.setsoftware.reviewtool.intellij;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -21,7 +22,10 @@ import com.intellij.diff.fragments.LineFragment;
 import com.intellij.diff.util.DiffUserDataKeys;
 import com.intellij.diff.util.DiffUserDataKeysEx;
 import com.intellij.diff.util.Side;
+import com.intellij.icons.AllIcons;
 import com.intellij.ide.util.PropertiesComponent;
+import com.intellij.openapi.actionSystem.ActionManager;
+import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.fileTypes.FileType;
 import com.intellij.openapi.fileTypes.FileTypeManager;
@@ -30,6 +34,7 @@ import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.util.Key;
 import com.intellij.openapi.util.Pair;
 import com.intellij.openapi.vfs.VirtualFile;
 
@@ -60,16 +65,18 @@ final class StopDiffViewer {
         private final String oldTitle;
         private final String newTitle;
         private final int line;
+        private final List<StopDiffExcerpt.Change> changes;
         private final StopDiffExcerpt excerpt;
 
         private StopDiffData(String fileName, String oldText, String newText, String oldTitle, String newTitle,
-                int line, StopDiffExcerpt excerpt) {
+                int line, List<StopDiffExcerpt.Change> changes, StopDiffExcerpt excerpt) {
             this.fileName = fileName;
             this.oldText = oldText;
             this.newText = newText;
             this.oldTitle = oldTitle;
             this.newTitle = newTitle;
             this.line = line;
+            this.changes = changes;
             this.excerpt = excerpt;
         }
 
@@ -79,6 +86,72 @@ final class StopDiffViewer {
          */
         StopDiffExcerpt getExcerpt() {
             return this.excerpt;
+        }
+    }
+
+    /**
+     * The stop a diff request shows, so that review remarks can be added in the diff (see
+     * {@link CortActions.AddRemark}).
+     */
+    /**
+     * The ids of the "Add Review Remark" action (the packaged plugin.xml renames it, see build.gradle.kts).
+     */
+    private static final String[] ADD_REMARK_ACTION_IDS = {
+        "de.setsoftware.reviewtool.cortoriginal.AddReviewRemarkAction",
+        "de.setsoftware.reviewtool.intellij.AddReviewRemarkAction",
+    };
+
+    static final Key<StopDiffTarget> STOP_DIFF_TARGET = Key.create("de.setsoftware.reviewtool.stopDiffTarget");
+
+    /**
+     * The stop shown in a diff, with the information needed to map a line of either side of the diff
+     * to a line of the current file (review remarks refer to the current file).
+     */
+    static final class StopDiffTarget {
+        private final Stop stop;
+        private final StopDiffData data;
+        private final StopDiffExcerpt excerpt;
+
+        StopDiffTarget(Stop stop, StopDiffData data, StopDiffExcerpt excerpt) {
+            this.stop = stop;
+            this.data = data;
+            this.excerpt = excerpt;
+        }
+
+        Stop getStop() {
+            return this.stop;
+        }
+
+        private static int lineCount(String text) {
+            int count = 1;
+            for (int i = 0; i < text.length() - 1; i++) {
+                if (text.charAt(i) == '\n') {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        /**
+         * Returns the (1-based) line of the current file for the given (0-based) line of the diff.
+         * Lines of the old side are mapped to the place where they have been changed or deleted.
+         *
+         * @param newSide True for the right ("after") side of the diff, false for the left side.
+         */
+        int toFileLine(boolean newSide, int diffLine) {
+            final int line;
+            if (newSide) {
+                line = this.excerpt == null ? diffLine : this.excerpt.toNewLine(diffLine);
+            } else {
+                final int oldLine = this.excerpt == null ? diffLine : this.excerpt.toOldLine(diffLine);
+                line = oldLine < 0 || this.data.changes == null
+                        ? -1 : StopDiffExcerpt.oldToNewLine(this.data.changes, oldLine);
+            }
+            if (line < 0) {
+                // a separator between the sections of the excerpt
+                return this.data.line;
+            }
+            return Math.min(line, lineCount(this.data.newText) - 1) + 1;
         }
     }
 
@@ -151,18 +224,15 @@ final class StopDiffViewer {
         final String oldTitle = oldFile == null ? "Before" : "Before (" + describe(oldFile.getRevision()) + ")";
         final String newTitle = "After (" + describe(newFile.getRevision()) + ")";
         final int line = stop.isDetailedFragmentKnown() ? stop.getMostRecentFragment().getFrom().getLine() : 1;
-        return new StopDiffData(newFile.getPath(), oldText, newText, oldTitle, newTitle, line,
-                createExcerpt(stop, oldText, newText));
+        final List<StopDiffExcerpt.Change> changes = compare(oldText, newText);
+        return new StopDiffData(newFile.getPath(), oldText, newText, oldTitle, newTitle, line, changes,
+                createExcerpt(stop, oldText, newText, changes));
     }
 
-    private static StopDiffExcerpt createExcerpt(Stop stop, String oldText, String newText) {
-        if (!stop.isDetailedFragmentKnown()) {
-            return null;
-        }
-        final IFragment fragment = stop.getMostRecentFragment();
-        final int stopStart = fragment.getFrom().getLine() - 1;
-        final int stopEnd = Math.max(stopStart,
-                fragment.getTo().getColumn() > 1 ? fragment.getTo().getLine() : fragment.getTo().getLine() - 1);
+    /**
+     * Returns the changed line ranges between the texts (empty if the texts are too big to compare).
+     */
+    private static List<StopDiffExcerpt.Change> compare(String oldText, String newText) {
         final List<LineFragment> fragments;
         try {
             fragments = ComparisonManager.getInstance().compareLines(
@@ -175,6 +245,18 @@ final class StopDiffViewer {
             changes.add(new StopDiffExcerpt.Change(
                     f.getStartLine1(), f.getEndLine1(), f.getStartLine2(), f.getEndLine2()));
         }
+        return changes;
+    }
+
+    private static StopDiffExcerpt createExcerpt(Stop stop, String oldText, String newText,
+            List<StopDiffExcerpt.Change> changes) {
+        if (!stop.isDetailedFragmentKnown() || changes == null) {
+            return null;
+        }
+        final IFragment fragment = stop.getMostRecentFragment();
+        final int stopStart = fragment.getFrom().getLine() - 1;
+        final int stopEnd = Math.max(stopStart,
+                fragment.getTo().getColumn() > 1 ? fragment.getTo().getLine() : fragment.getTo().getLine() - 1);
         return StopDiffExcerpt.create(oldText, newText, changes, stopStart, stopEnd, CONTEXT_LINES);
     }
 
@@ -196,6 +278,7 @@ final class StopDiffViewer {
             final SimpleDiffRequest request = new SimpleDiffRequest(
                     "Review stop: " + data.fileName, left, right, data.oldTitle, data.newTitle);
             request.putUserData(DiffUserDataKeys.SCROLL_TO_LINE, Pair.create(Side.RIGHT, Math.max(0, data.line - 1)));
+            addRemarkSupport(request, new StopDiffTarget(stop, data, null));
             return request;
         }
         final DiffContent left = oldContent(project, factory, excerpt.getOldText(), fileType);
@@ -207,7 +290,30 @@ final class StopDiffViewer {
                 data.oldTitle + " - stop's changes only", data.newTitle + " - stop's changes only");
         request.putUserData(DiffUserDataKeys.SCROLL_TO_LINE,
                 Pair.create(Side.RIGHT, excerpt.toNewExcerptLine(Math.max(0, data.line - 1))));
+        addRemarkSupport(request, new StopDiffTarget(stop, data, excerpt));
         return request;
+    }
+
+    /**
+     * Makes it possible to add review remarks in the diff: the action is shown in the diff's toolbar
+     * (and in its context menus, see plugin.xml) and maps the line to the current file.
+     */
+    private static void addRemarkSupport(SimpleDiffRequest request, StopDiffTarget target) {
+        request.putUserData(STOP_DIFF_TARGET, target);
+        request.putUserData(DiffUserDataKeys.CONTEXT_ACTIONS, Collections.singletonList(addRemarkAction()));
+    }
+
+    private static AnAction addRemarkAction() {
+        for (final String id : ADD_REMARK_ACTION_IDS) {
+            final AnAction action = ActionManager.getInstance().getAction(id);
+            if (action != null) {
+                return action;
+            }
+        }
+        final AnAction action = new CortActions.AddRemark();
+        action.getTemplatePresentation().setText("Add Review Remark (CoRT)...");
+        action.getTemplatePresentation().setIcon(AllIcons.General.Add);
+        return action;
     }
 
     /**

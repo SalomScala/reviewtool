@@ -2,6 +2,7 @@ package de.setsoftware.reviewtool.model.viewtracking;
 
 import java.io.File;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -72,6 +73,62 @@ public class ViewStatistics {
      */
     public boolean isMarkedAsChecked(Stop stop) {
         return this.explicitMarks.contains(stop);
+    }
+
+    /**
+     * Returns the statistics of all files that have been viewed (read-only).
+     */
+    public Map<File, ViewStatisticsForFile> getStatisticsPerFile() {
+        return Collections.unmodifiableMap(this.files);
+    }
+
+    /**
+     * Returns the stops that have been explicitly marked as checked.
+     */
+    public Set<Stop> getCheckedStops() {
+        return Collections.unmodifiableSet(this.explicitMarks);
+    }
+
+    /**
+     * Replaces the statistics of the given file with the given ones (e.g. ones that have been saved
+     * before, so that the progress of a review survives a restart of the IDE).
+     *
+     * @param countsPerLine How often each (one-based) line has been viewed.
+     */
+    public void restore(File filePath, int unspecificCount, Map<Integer, Integer> countsPerLine) {
+        final File absFile = filePath.getAbsoluteFile();
+        this.getOrCreate(absFile).restore(unspecificCount, countsPerLine);
+        this.notifyListeners(absFile);
+    }
+
+    /**
+     * Marks the given stops as checked (stops that are already marked stay marked).
+     */
+    public void markAsChecked(Collection<Stop> stops) {
+        final Set<File> files = new LinkedHashSet<>();
+        for (final Stop stop : stops) {
+            if (this.explicitMarks.add(stop)) {
+                files.add(stop.getAbsoluteFile());
+            }
+        }
+        for (final File file : files) {
+            this.notifyListeners(file);
+        }
+    }
+
+    /**
+     * Removes all statistics and checked marks.
+     */
+    public void clear() {
+        final Set<File> files = new LinkedHashSet<>(this.files.keySet());
+        for (final Stop stop : this.explicitMarks) {
+            files.add(stop.getAbsoluteFile());
+        }
+        this.files.clear();
+        this.explicitMarks.clear();
+        for (final File file : files) {
+            this.notifyListeners(file);
+        }
     }
 
     private ViewStatisticsForFile getOrCreate(File absFile) {

@@ -160,6 +160,27 @@ falsches Token, Neustart mit ungespeicherten Anmerkungen –, Ticketwechsel wäh
 - Ein Wechsel des Themes/Farbschemas zeichnet die Stop-Markierungen in den neuen Farben neu.
 - Die Ticketzeile übernimmt nach dem Laden den aktuellen Status, ohne die Spalten „Prev. state/reviewers“ zu verlieren.
 
+Fünfte Runde (Wunschliste: Fortschritt über Neustarts, Anmerkungen im Diff, kleinere Punkte):
+
+- **Review-Fortschritt bleibt über Neustarts erhalten.** Pro Ticket und Review-Runde werden gespeichert: die Auswahl
+  beim Erzeugen der Touren (Tour-Struktur, als irrelevant markierte Kategorien), wie oft die Zeilen der Dateien
+  angesehen wurden, und die abgehakten Stops. Gespeichert wird im Systemverzeichnis der IDE (pro Projekt), kurz nach
+  jeder Änderung, beim Pausieren und beim Schließen; nach dem Review-Ende wird der Stand gelöscht, der Stand einer
+  älteren Runde wird verworfen. Nach einem Neustart bietet eine Benachrichtigung „Continue review“ an: Die Touren
+  werden ohne Rückfragen genauso erzeugt wie vorher, und Besuchsstatus und Häkchen sind wieder da. Auch „Start Review“
+  auf dem Ticket übernimmt den gespeicherten Stand.
+- **Anmerkungen direkt im Diff.** „Add Review Remark (CoRT)…“ steht in der Toolbar des Stop-Diffs (eingebettet und
+  im eigenen Fenster), im Kontextmenü beider Seiten und im Gutter-Menü; Strg+Alt+4 funktioniert dort ebenfalls. Die
+  Zeile wird auf die aktuelle Datei umgerechnet – auch im Ausschnitt „Only the stop's changes“ und für die linke
+  (alte) Seite: Eine geänderte oder gelöschte Zeile landet an der Stelle, an der sie geändert bzw. gelöscht wurde.
+  Vorher entstand dort nur eine globale Anmerkung.
+- **Nur ein Review/Fixing gleichzeitig:** „Start Review“ für ein anderes Ticket während eines laufenden Reviews
+  erklärt das und bietet an, das laufende Ticket anzuzeigen (vorher hätte ein zweiter Start Touren und Fortschritt
+  des ersten überschrieben).
+- Bewusst nicht geändert: Reviewer-Namen erscheinen weiter in Großbuchstaben. Das ist die CoRT-Konvention (auch im
+  Jira-Connector der Eclipse-Version), und die Kürzel landen so auch im Anmerkungstext. Die fehlenden Dialogtitel
+  im Test lagen am virtuellen Bildschirm ohne Fenstermanager; alle Dialoge setzen einen Titel.
+
 ## Gefundene und behobene Fehler
 
 - **Unsichtbare Gutter-Icons** (zweite Runde, im Praxistest gefunden): Die Gutter-Icons der Stops und Anmerkungen
@@ -189,3 +210,5 @@ falsches Token, Neustart mit ungespeicherten Anmerkungen –, Ticketwechsel wäh
   gilt nur HTTP 404 als „nicht gefunden“, alle anderen Fehler werden gemeldet, und die Anmerkungen bleiben gesperrt,
   bis sie geladen werden konnten (Tests in `YouTrackConnectorTest`). Auch ein abgelehnter Statuswechsel wegen
   falschem Token/URL wird nicht mehr verschluckt.
+- **Falsche Aktions-ID im gepackten Plugin** (fünfte Runde, durch einen Test gefunden): Das gepackte plugin.xml
+  benennt die Aktions-IDs um („…cortoriginal.…“). Code, der eine Aktion über ihre ID sucht, muss beide IDs kennen.
