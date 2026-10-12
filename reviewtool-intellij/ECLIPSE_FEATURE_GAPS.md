@@ -216,6 +216,13 @@ Siebte Runde (KI-Unterstützung, zweite Ausbaustufe; ohne Eclipse-Pendant):
 
 ## Gefundene und behobene Fehler
 
+- **„Read access is allowed from inside read-action only“ beim Doppelklick auf einen Stop** (im Praxiseinsatz mit
+  einer aktuellen IDE gefunden): Seit IntelliJ 2026 haben Maus-Handler im UI-Thread nicht mehr automatisch Lesezugriff.
+  Der Sprung zur Zeile las das Dokument ohne Read-Action – betroffen waren der Doppelklick im Tour-Baum, in der
+  Zusammenfassung und die Stop-Links im KI-Tab. Jetzt geschieht das in einer Read-Action. Mit IntelliJ IDEA 2026.2.3
+  nachgestellt und nach dem Fix ohne Fehler durchgespielt (Tour-Baum, Changes, Summary, Remarks, Anmerkung anlegen);
+  der Test `testNavigationDescriptorUsesTheLineStart` ruft die Methode zusätzlich aus einem Hintergrund-Thread auf, wo
+  auch die 2024.3-Testplattform den fehlenden Lesezugriff meldet.
 - **Falsch kodierte Zeichen im Diff** (im Praxiseinsatz unter Windows gefunden): Statt der Trennmarke „⋯“ zwischen
   den Teilen eines Stops zeigte die Diff-Anzeige „â‹¯“. Das IntelliJ-Modul gab beim Kompilieren keine Quellcodierung
   an, sodass javac die UTF-8-Quellen mit der Plattformcodierung (windows-1252) las. Betroffen waren auch „temporärer

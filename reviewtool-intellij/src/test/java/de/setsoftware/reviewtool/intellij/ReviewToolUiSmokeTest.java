@@ -319,7 +319,7 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
         }
     }
 
-    public void testNavigationDescriptorUsesTheLineStart() {
+    public void testNavigationDescriptorUsesTheLineStart() throws Exception {
         final com.intellij.psi.PsiFile file =
                 this.myFixture.addFileToProject("Lines.java", "class Lines {\n    int a;\n    int b;\n}\n");
         final com.intellij.openapi.vfs.VirtualFile vf = file.getVirtualFile();
@@ -328,6 +328,12 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
         // lines outside the file are clamped
         assertEquals(0, IntellijFileResolver.descriptorForLine(this.getProject(), vf, -5).getOffset());
         assertTrue(IntellijFileResolver.descriptorForLine(this.getProject(), vf, 100).getOffset() > 0);
+        // the document is read in a read action: since IntelliJ 2026, UI event handlers have no implicit
+        // read access (like a background thread here), and the double click on a stop logged an error
+        final int offset = com.intellij.openapi.application.ApplicationManager.getApplication()
+                .executeOnPooledThread(() -> IntellijFileResolver.descriptorForLine(this.getProject(), vf, 2).getOffset())
+                .get(20, java.util.concurrent.TimeUnit.SECONDS);
+        assertEquals("class Lines {\n    int a;\n".length(), offset);
     }
 
     public void testToursFromGitChanges() throws Exception {

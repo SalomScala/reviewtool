@@ -71,14 +71,19 @@ final class IntellijFileResolver {
      * Creates a descriptor to open the given file at the start of the given (0-based) line. The
      * descriptor is created from the offset, because the variant with line and column determines the
      * code style (and thereby the PSI) of the file, which is a slow operation on the EDT.
+     * The document is read in a read action: since IntelliJ 2026, UI event handlers (e.g. a double
+     * click in the tours tree) no longer have read access implicitly.
      */
     static OpenFileDescriptor descriptorForLine(Project project, VirtualFile file, int line) {
-        final Document document = FileDocumentManager.getInstance().getDocument(file);
-        if (document == null || document.getLineCount() == 0) {
-            return new OpenFileDescriptor(project, file, 0);
-        }
-        final int boundedLine = Math.max(0, Math.min(line, document.getLineCount() - 1));
-        return new OpenFileDescriptor(project, file, document.getLineStartOffset(boundedLine));
+        final int offset = ReadAction.compute(() -> {
+            final Document document = FileDocumentManager.getInstance().getDocument(file);
+            if (document == null || document.getLineCount() == 0) {
+                return 0;
+            }
+            final int boundedLine = Math.max(0, Math.min(line, document.getLineCount() - 1));
+            return document.getLineStartOffset(boundedLine);
+        });
+        return new OpenFileDescriptor(project, file, offset);
     }
 
     /**
