@@ -216,6 +216,11 @@ Siebte Runde (KI-Unterstützung, zweite Ausbaustufe; ohne Eclipse-Pendant):
 
 ## Gefundene und behobene Fehler
 
+- **Falsch kodierte Zeichen im Diff** (im Praxiseinsatz unter Windows gefunden): Statt der Trennmarke „⋯“ zwischen
+  den Teilen eines Stops zeigte die Diff-Anzeige „â‹¯“. Das IntelliJ-Modul gab beim Kompilieren keine Quellcodierung
+  an, sodass javac die UTF-8-Quellen mit der Plattformcodierung (windows-1252) las. Betroffen waren auch „temporärer
+  Marker“ im Anmerkungsdialog, „→“ in der Zusammenfassung und „·“ im KI-Tab. Jetzt wird wie im Core-Modul explizit
+  UTF-8 verwendet; der Test `StopDiffExcerptTest.testSourcesAreCompiledAsUtf8` schlägt bei falscher Codierung fehl.
 - **Unsichtbare Gutter-Icons** (zweite Runde, im Praxistest gefunden): Die Gutter-Icons der Stops und Anmerkungen
   wurden in der neuen IntelliJ-UI nicht angezeigt (veraltete Balloon-/Arrow-Icons mit linker Ausrichtung) – damit
   fehlte im Editor auch der Einstieg in das Quick-Fix-Popup der Anmerkungen. Jetzt mit eigenen Stop-Icons bzw. den

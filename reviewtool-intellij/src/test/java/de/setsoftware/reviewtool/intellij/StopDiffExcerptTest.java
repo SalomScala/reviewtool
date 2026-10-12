@@ -25,6 +25,13 @@ public class StopDiffExcerptTest {
             new StopDiffExcerpt.Change(9, 9, 9, 10));
 
     @Test
+    public void testSourcesAreCompiledAsUtf8() {
+        // with the platform encoding (e.g. windows-1252), the separator became "\u00e2\u2039\u00af" ("â‹¯")
+        assertEquals("\u22ef", StopDiffExcerpt.SEPARATOR);
+        assertEquals("tempor\u00e4rer", "temporärer");
+    }
+
+    @Test
     public void testOnlyTheChangeOfTheStopIsContained() {
         final StopDiffExcerpt excerpt = StopDiffExcerpt.create(OLD, NEW, CHANGES, 9, 10, 2);
         final String sep = StopDiffExcerpt.SEPARATOR;
