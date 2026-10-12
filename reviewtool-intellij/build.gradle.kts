@@ -25,6 +25,12 @@ java {
     }
 }
 
+// the sources are UTF-8 (e.g. the "⋯" between the parts of a stop's diff); without this, javac uses the
+// platform encoding (windows-1252 on many Windows machines) and such characters end up garbled
+tasks.withType<JavaCompile>().configureEach {
+    options.encoding = "UTF-8"
+}
+
 dependencies {
     implementation(project(":reviewtool-core"))
 
