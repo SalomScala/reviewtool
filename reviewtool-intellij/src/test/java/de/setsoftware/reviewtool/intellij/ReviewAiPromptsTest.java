@@ -15,6 +15,8 @@ import com.eclipsesource.json.Json;
 import com.eclipsesource.json.JsonObject;
 
 import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.Context;
+import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.RemarkCheck;
+import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.RemarkForAi;
 import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.RemarkSuggestion;
 import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.StopRisk;
 import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.StopForAi;
@@ -148,6 +150,47 @@ public class ReviewAiPromptsTest {
         assertEquals(Json.array("high", "medium", "low"), ReviewAiPrompts.risksSchema().get("properties").asObject()
                 .get("stops").asObject().get("items").asObject().get("properties").asObject().get("risk").asObject()
                 .get("enum"));
+    }
+
+    @Test
+    public void testRemarkChecks() {
+        final RemarkForAi remark = new RemarkForAi(1, 1, "must fix", "fixed", "Calculator.java:15",
+                "times needs\na javadoc comment");
+        assertEquals("Remark 1 (review 1, must fix, state: fixed, Calculator.java:15): times needs a javadoc comment",
+                remark.describe());
+        assertEquals("Remark 1, review 1, must fix, state: fixed", remark.summary());
+        final String request = ReviewAiPrompts.remarkChecksRequest(Arrays.asList(remark));
+        assertTrue(request, request.startsWith("Check the review remarks of the earlier review rounds"));
+        assertTrue(request, request.endsWith("- " + remark.describe() + "\n"));
+        assertEquals(Json.array("fixed", "not_fixed", "unclear"), ReviewAiPrompts.remarkChecksSchema()
+                .get("properties").asObject().get("remarks").asObject().get("items").asObject()
+                .get("properties").asObject().get("status").asObject().get("enum"));
+
+        final List<RemarkCheck> checks = ReviewAiPrompts.parseRemarkChecks(Json.parse("{\"remarks\":["
+                + "{\"remark\":2,\"status\":\"not fixed\",\"stop\":0,\"reason\":\"still a loop\"},"
+                + "{\"remark\":1,\"status\":\"fixed\",\"stop\":3,\"reason\":\" javadoc added \"},"
+                + "{\"remark\":1,\"status\":\"unclear\",\"stop\":3,\"reason\":\"second check\"},"
+                + "{\"remark\":3,\"status\":\"fixed\",\"stop\":99,\"reason\":\"unknown stop\"},"
+                + "{\"remark\":7,\"status\":\"fixed\",\"stop\":1,\"reason\":\"unknown remark\"},"
+                + "{\"remark\":4,\"status\":\"done\",\"stop\":1,\"reason\":\"unknown status\"}]}").asObject(),
+                new HashSet<>(Arrays.asList(1, 2, 3, 4)), new HashSet<>(Arrays.asList(1, 3)));
+        assertEquals(3, checks.size());
+        assertEquals(1, checks.get(0).getRemark());
+        assertEquals("fixed", checks.get(0).getStatus());
+        assertEquals(3, checks.get(0).getStop());
+        assertEquals("javadoc added", checks.get(0).getReason());
+        assertEquals("not_fixed", checks.get(1).getStatus());
+        // an unknown stop is ignored, the check is kept
+        assertEquals(3, checks.get(2).getRemark());
+        assertEquals(0, checks.get(2).getStop());
+    }
+
+    @Test
+    public void testRemarkTextsAreAbbreviated() {
+        assertEquals("first line \u2026", RemarkLinePainter.abbreviate("  first line\nsecond line"));
+        final String longText = new String(new char[200]).replace('\0', 'x');
+        assertEquals(140, RemarkLinePainter.abbreviate(longText).length());
+        assertTrue(RemarkLinePainter.abbreviate(longText).endsWith("\u2026"));
     }
 
 }

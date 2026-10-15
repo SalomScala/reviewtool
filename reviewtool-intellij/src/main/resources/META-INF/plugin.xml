@@ -28,6 +28,8 @@
                 nonDefaultProject="true"
                 instance="de.setsoftware.reviewtool.intellij.ReviewToolConfigurable"/>
         <notificationGroup id="CoRT" displayType="BALLOON"/>
+        <!-- the text of the review remarks at the end of their lines -->
+        <editor.linePainter implementation="de.setsoftware.reviewtool.intellij.RemarkLinePainter"/>
     </extensions>
 
     <!--

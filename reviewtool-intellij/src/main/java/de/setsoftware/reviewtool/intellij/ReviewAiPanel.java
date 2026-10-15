@@ -4,6 +4,7 @@ import java.awt.BorderLayout;
 import java.awt.Point;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -38,8 +39,11 @@ import com.intellij.util.ui.JBUI;
 import com.intellij.util.ui.UIUtil;
 
 import de.setsoftware.reviewtool.base.Logger;
+import de.setsoftware.reviewtool.base.Pair;
 import de.setsoftware.reviewtool.intellij.OpencodeClient.Answer;
 import de.setsoftware.reviewtool.intellij.OpencodeClient.OpencodeException;
+import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.RemarkCheck;
+import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.RemarkForAi;
 import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.RemarkSuggestion;
 import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.StopForAi;
 import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.StopRisk;
@@ -49,6 +53,7 @@ import de.setsoftware.reviewtool.model.changestructure.Stop;
 import de.setsoftware.reviewtool.model.changestructure.Tour;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
 import de.setsoftware.reviewtool.model.remarks.RemarkType;
+import de.setsoftware.reviewtool.model.remarks.ReviewRemark;
 
 /**
  * The "AI" tab: AI support for the review via a local opencode (optional, off by default). It asks the
@@ -69,7 +74,8 @@ final class ReviewAiPanel extends JPanel {
         SUMMARY("Summary of the changes"),
         EXPLAIN("Explanation"),
         REMARKS("Suggested remarks"),
-        RISKS("Risk of the stops");
+        RISKS("Risk of the stops"),
+        CHECK("Check of the remarks");
 
         private final String title;
 
@@ -154,6 +160,11 @@ final class ReviewAiPanel extends JPanel {
     /** All remark suggestions shown, by their id (used in the links). */
     private final transient List<Suggestion> suggestions = new ArrayList<>();
     private transient RemarkAcceptor remarkAcceptor = (stop, line, type, text) -> false;
+    /** Returns the remarks of the earlier review rounds with their round numbers (for "Check Remarks"). */
+    private transient Supplier<List<Pair<ReviewRemark, Integer>>> earlierRemarks = ArrayList::new;
+    private transient Consumer<ReviewRemark> remarkJumper = (remark) -> { };
+    /** The remarks shown in the answers, by their id (used in the links). */
+    private final transient List<ReviewRemark> remarkLinks = new ArrayList<>();
     private transient BiConsumer<ToursInReview, Map<Stop, StopRisk>> riskListener = (t, r) -> { };
 
     /**
@@ -180,6 +191,8 @@ final class ReviewAiPanel extends JPanel {
                 () -> !this.busy, this::suggestRemarks)));
         group.add(PanelActions.withTextInToolbar(PanelActions.action("Rate Risks", AllIcons.General.Warning,
                 () -> !this.busy, this::rateRisks)));
+        group.add(PanelActions.withTextInToolbar(PanelActions.action("Check Remarks", AllIcons.Actions.Checked,
+                () -> !this.busy, this::checkRemarks)));
         group.add(PanelActions.action("Clear Answers", AllIcons.Actions.GC, () -> !this.entries.isEmpty() && !this.busy,
                 this::clear));
         final ActionToolbar toolbar = ActionManager.getInstance().createActionToolbar("CoRT.Ai", group, true);
@@ -206,6 +219,11 @@ final class ReviewAiPanel extends JPanel {
                 this.linkToStopClicked(e.getDescription());
             } else if (e.getDescription() != null && e.getDescription().startsWith("accept:")) {
                 this.accept(Integer.parseInt(e.getDescription().substring("accept:".length())));
+            } else if (e.getDescription() != null && e.getDescription().startsWith("remark:")) {
+                final int id = Integer.parseInt(e.getDescription().substring("remark:".length()));
+                if (id >= 0 && id < this.remarkLinks.size()) {
+                    this.remarkJumper.accept(this.remarkLinks.get(id));
+                }
             } else if (e.getDescription() != null && e.getDescription().startsWith("reject:")) {
                 this.reject(Integer.parseInt(e.getDescription().substring("reject:".length())));
             }
@@ -231,6 +249,15 @@ final class ReviewAiPanel extends JPanel {
      */
     void setRiskListener(BiConsumer<ToursInReview, Map<Stop, StopRisk>> listener) {
         this.riskListener = listener;
+    }
+
+    /**
+     * Sets the source of the remarks of the earlier review rounds (with their round numbers) and the
+     * callback that jumps to a remark.
+     */
+    void setRemarks(Supplier<List<Pair<ReviewRemark, Integer>>> earlierRemarks, Consumer<ReviewRemark> jumper) {
+        this.earlierRemarks = earlierRemarks;
+        this.remarkJumper = jumper;
     }
 
     private boolean isEnabledInSettings() {
@@ -266,6 +293,32 @@ final class ReviewAiPanel extends JPanel {
     }
 
     /**
+     * Asks the model whether the changes address the remarks of the earlier review rounds.
+     */
+    void checkRemarks() {
+        if (!this.isEnabledInSettings()) {
+            this.render();
+            return;
+        }
+        final List<RemarkForAi> remarks = new ArrayList<>();
+        final List<ReviewRemark> refs = new ArrayList<>();
+        for (final Pair<ReviewRemark, Integer> p : this.earlierRemarks.get()) {
+            final ReviewRemark remark = p.getFirst();
+            refs.add(remark);
+            remarks.add(new RemarkForAi(remarks.size() + 1, p.getSecond(), ReviewRemarksPanel.typeLabel(remark),
+                    remark.getResolution().name().toLowerCase(Locale.ROOT).replace('_', ' '),
+                    ReviewRemarksPanel.describePosition(remark), remark.getText()));
+        }
+        if (remarks.isEmpty()) {
+            this.addEntry(new Entry(Kind.CHECK.title, "<p>There are no remarks from earlier review rounds to check."
+                    + " \"Check Remarks\" is meant for the second review round and later: it checks whether the"
+                    + " changes since then address the remarks.</p>", true));
+            return;
+        }
+        this.ask(Kind.CHECK, null, remarks, refs);
+    }
+
+    /**
      * Asks the model to explain the given stop.
      */
     void explain(Stop stop) {
@@ -281,11 +334,16 @@ final class ReviewAiPanel extends JPanel {
     private void clear() {
         this.entries.clear();
         this.suggestions.clear();
+        this.remarkLinks.clear();
         this.riskListener.accept(null, new HashMap<>());
         this.render();
     }
 
     private void ask(Kind kind, Stop stop) {
+        this.ask(kind, stop, null, null);
+    }
+
+    private void ask(Kind kind, Stop stop, List<RemarkForAi> remarks, List<ReviewRemark> remarkRefs) {
         final String title = kind.title;
         if (!this.isEnabledInSettings()) {
             this.render();
@@ -335,7 +393,7 @@ final class ReviewAiPanel extends JPanel {
                     if (stop != null && stopForAi == null) {
                         throw new OpencodeException("The stop is not part of the current tours.", false, null);
                     }
-                    text.append(request(kind, stopForAi));
+                    text.append(request(kind, stopForAi, remarks));
                     String session = ReviewAiPanel.this.sessionId;
                     if (session == null) {
                         session = client.createSession("CoRT review: " + reviewName);
@@ -349,6 +407,9 @@ final class ReviewAiPanel extends JPanel {
                     } else if (kind == Kind.RISKS) {
                         answer = client.promptStructured(session, system, text.toString(),
                                 ReviewAiPrompts.risksSchema(), indicator::isCanceled);
+                    } else if (kind == Kind.CHECK) {
+                        answer = client.promptStructured(session, system, text.toString(),
+                                ReviewAiPrompts.remarkChecksSchema(), indicator::isCanceled);
                     } else {
                         answer = client.prompt(session, system, text.toString(), indicator::isCanceled);
                     }
@@ -366,6 +427,8 @@ final class ReviewAiPanel extends JPanel {
                             ReviewAiPanel.this.remarksSuggested(answer, stops, finalOmitted);
                         } else if (kind == Kind.RISKS) {
                             ReviewAiPanel.this.risksRated(answer, stops, currentTours, finalOmitted);
+                        } else if (kind == Kind.CHECK) {
+                            ReviewAiPanel.this.remarksChecked(answer, stops, remarks, remarkRefs, finalOmitted);
                         } else {
                             ReviewAiPanel.this.answered(heading, answer, finalOmitted);
                         }
@@ -385,8 +448,10 @@ final class ReviewAiPanel extends JPanel {
         }.queue();
     }
 
-    private static String request(Kind kind, StopForAi stop) {
+    private static String request(Kind kind, StopForAi stop, List<RemarkForAi> remarks) {
         switch (kind) {
+        case CHECK:
+            return ReviewAiPrompts.remarkChecksRequest(remarks);
         case EXPLAIN:
             return ReviewAiPrompts.explainRequest(stop);
         case REMARKS:
@@ -557,6 +622,62 @@ final class ReviewAiPanel extends JPanel {
         appendOmittedHint(html, omittedDiffs);
         this.addEntry(new Entry(titleWithModel(Kind.RISKS.title, answer),
                 linkStops(html.toString(), numbers.keySet(), this.conversation), false));
+    }
+
+    /**
+     * Shows the model's assessment of the remarks of the earlier review rounds (package-private for tests).
+     */
+    void remarksChecked(Answer answer, Map<Stop, StopForAi> stops, List<RemarkForAi> remarks,
+            List<ReviewRemark> remarkRefs, int omittedDiffs) {
+        this.setBusy(false);
+        this.setStatus("");
+        final Map<Integer, Stop> numbers = byNumber(stops);
+        final Set<Integer> remarkNumbers = new HashSet<>();
+        for (final RemarkForAi remark : remarks) {
+            remarkNumbers.add(remark.getNumber());
+        }
+        final List<RemarkCheck> checks =
+                ReviewAiPrompts.parseRemarkChecks(answer.getStructured(), remarkNumbers, numbers.keySet());
+        final StringBuilder html = new StringBuilder();
+        if (checks.isEmpty()) {
+            html.append("<p>The model did not check any remark.</p>");
+        }
+        for (final RemarkCheck check : checks) {
+            final RemarkForAi remark = remarks.get(check.getRemark() - 1);
+            final ReviewRemark ref = remarkRefs.get(check.getRemark() - 1);
+            final int id = this.remarkLinks.size();
+            this.remarkLinks.add(ref);
+            html.append("<p>").append(checkLabel(check.getStatus())).append(" <a href='remark:").append(id).append("'>")
+                    .append(SimpleMarkdown.escape(ReviewRemarksPanel.describePosition(ref))).append("</a> ")
+                    .append(SimpleMarkdown.escape(RemarkLinePainter.abbreviate(ref.getText())))
+                    .append("<br><span class='hint'>").append(SimpleMarkdown.escape(remark.summary()));
+            if (check.getStop() > 0) {
+                html.append(", Stop ").append(check.getStop());
+            }
+            if (!check.getReason().isEmpty()) {
+                html.append(" &ndash; ").append(SimpleMarkdown.escape(check.getReason()));
+            }
+            html.append("</span></p>");
+        }
+        final int notChecked = remarks.size() - checks.size();
+        if (notChecked > 0 && !checks.isEmpty()) {
+            html.append("<p class='hint'>").append(notChecked).append(notChecked == 1 ? " remark was" : " remarks were")
+                    .append(" not checked.</p>");
+        }
+        appendOmittedHint(html, omittedDiffs);
+        this.addEntry(new Entry(titleWithModel(Kind.CHECK.title, answer),
+                linkStops(html.toString(), numbers.keySet(), this.conversation), false));
+    }
+
+    private static String checkLabel(String status) {
+        switch (status) {
+        case "fixed":
+            return "<b style='color:#3c9a3c'>fixed</b>";
+        case "not_fixed":
+            return "<b style='color:#d04040'>not fixed</b>";
+        default:
+            return "<b>unclear</b>";
+        }
     }
 
     private static String riskLabel(String risk) {
@@ -736,7 +857,9 @@ final class ReviewAiPanel extends JPanel {
                     + " of a stop): what the stop changes and what to check</li>"
                     + "<li><b>Suggest Remarks</b>: remarks you can accept (and edit) or reject</li>"
                     + "<li><b>Rate Risks</b>: which stops need particular attention (shown in the \"Tours\""
-                    + " tab)</li></ul>"
+                    + " tab)</li>"
+                    + "<li><b>Check Remarks</b> (from the second review round on): whether the changes fix the"
+                    + " remarks of the earlier rounds</li></ul>"
                     + "<p>AI answers can be wrong - they help you review, they do not replace it.</p>");
         }
         for (int i = this.entries.size() - 1; i >= 0; i--) {

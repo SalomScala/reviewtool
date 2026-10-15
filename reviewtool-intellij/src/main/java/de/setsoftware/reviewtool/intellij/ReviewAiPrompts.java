@@ -158,6 +158,91 @@ final class ReviewAiPrompts {
         }
     }
 
+    /**
+     * A review remark of an earlier round as it is described to the model (for the check whether the
+     * changes address it).
+     */
+    static final class RemarkForAi {
+        private final int number;
+        private final int round;
+        private final String kind;
+        private final String state;
+        private final String location;
+        private final String text;
+
+        /**
+         * @param state The state set by the author of the changes (e.g. "fixed", "open").
+         * @param location The position, e.g. "Calculator.java:10" or "(global)".
+         */
+        RemarkForAi(int number, int round, String kind, String state, String location, String text) {
+            this.number = number;
+            this.round = round;
+            this.kind = kind;
+            this.state = state;
+            this.location = location;
+            this.text = text;
+        }
+
+        int getNumber() {
+            return this.number;
+        }
+
+        /**
+         * A short description without the position and the text, e.g. "Remark 1, review 1, must fix, state: open".
+         */
+        String summary() {
+            return "Remark " + this.number + ", review " + this.round + ", " + this.kind + ", state: " + this.state;
+        }
+
+        String describe() {
+            return "Remark " + this.number + " (review " + this.round + ", " + this.kind + ", state: " + this.state
+                    + ", " + this.location + "): " + this.text.replace('\n', ' ').trim();
+        }
+    }
+
+    /**
+     * The model's assessment whether a remark is addressed by the changes.
+     */
+    static final class RemarkCheck {
+        private final int remark;
+        private final String status;
+        private final int stop;
+        private final String reason;
+
+        RemarkCheck(int remark, String status, int stop, String reason) {
+            this.remark = remark;
+            this.status = status;
+            this.stop = stop;
+            this.reason = reason;
+        }
+
+        int getRemark() {
+            return this.remark;
+        }
+
+        /**
+         * One of {@link ReviewAiPrompts#CHECK_STATUSES}.
+         */
+        String getStatus() {
+            return this.status;
+        }
+
+        /**
+         * The stop with the change that addresses the remark, or 0 if there is none.
+         */
+        int getStop() {
+            return this.stop;
+        }
+
+        String getReason() {
+            return this.reason;
+        }
+    }
+
+    /** The results of the check of a remark. */
+    static final List<String> CHECK_STATUSES = Collections.unmodifiableList(
+            Arrays.asList("fixed", "not_fixed", "unclear"));
+
     /** The kinds of remarks the model can suggest (in the order of the remark types of CoRT). */
     static final List<String> REMARK_KINDS = Collections.unmodifiableList(
             Arrays.asList("must", "can", "positive", "other"));
@@ -404,6 +489,58 @@ final class ReviewAiPrompts {
     private static String stringValue(JsonObject object, String name) {
         final JsonValue value = object.get(name);
         return value != null && value.isString() ? value.asString() : "";
+    }
+
+    /**
+     * The request to check whether the changes address the remarks of earlier review rounds (to be
+     * answered in the format of {@link #remarkChecksSchema()}).
+     */
+    static String remarkChecksRequest(List<RemarkForAi> remarks) {
+        final StringBuilder sb = new StringBuilder("Check the review remarks of the earlier review rounds against"
+                + " these changes: for each remark, decide whether the changes fix it (\"fixed\"), do not fix it"
+                + " (\"not_fixed\") or whether that cannot be decided from the changes (\"unclear\"). Read the files"
+                + " if you need more context. Give the number of the stop with the change that addresses the remark"
+                + " (0 if there is none) and a short reason (at most 25 words). The state is the one set by the"
+                + " author of the changes; check it, do not just repeat it. Check every remark.\n\n");
+        for (final RemarkForAi remark : remarks) {
+            sb.append("- ").append(remark.describe()).append('\n');
+        }
+        return sb.toString();
+    }
+
+    static JsonObject remarkChecksSchema() {
+        final JsonObject check = object()
+                .add("properties", new JsonObject()
+                        .add("remark", integer("The number of the remark"))
+                        .add("status", enumeration(CHECK_STATUSES, "Whether the changes fix the remark"))
+                        .add("stop", integer("The stop with the change that addresses the remark, 0 if none"))
+                        .add("reason", string("A short reason")))
+                .add("required", strings("remark", "status", "stop", "reason"));
+        return object()
+                .add("properties", new JsonObject().add("remarks", new JsonObject().add("type", "array")
+                        .add("items", check)))
+                .add("required", strings("remarks"));
+    }
+
+    /**
+     * Reads the checks of the remarks from the answer, in the order of the remark numbers. Checks of
+     * unknown remarks or with an unknown status are left out, as well as further checks of the same
+     * remark; unknown stops become 0.
+     */
+    static List<RemarkCheck> parseRemarkChecks(JsonObject answer, Set<Integer> remarks, Set<Integer> stops) {
+        final List<RemarkCheck> result = new ArrayList<>();
+        final Set<Integer> seen = new HashSet<>();
+        for (final JsonObject check : objects(answer, "remarks")) {
+            final int remark = intValue(check, "remark");
+            final String status = stringValue(check, "status").toLowerCase(Locale.ROOT).replace(' ', '_');
+            if (remarks.contains(remark) && CHECK_STATUSES.contains(status) && seen.add(remark)) {
+                final int stop = intValue(check, "stop");
+                result.add(new RemarkCheck(remark, status, stops.contains(stop) ? stop : 0,
+                        stringValue(check, "reason").trim()));
+            }
+        }
+        result.sort(Comparator.comparingInt((RemarkCheck c) -> c.remark));
+        return result;
     }
 
 }

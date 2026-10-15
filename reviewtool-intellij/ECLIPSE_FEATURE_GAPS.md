@@ -227,6 +227,22 @@ filters“-Dialog):
 - Bisher bekam die IntelliJ-Version die Review-Runden gar nicht (leere Liste) und reviewte immer alle Commits.
 - Kleinigkeit: „1 stop“ statt „1 stops“ im Tour-Baum.
 
+Neunte Runde (Anmerkungen im Editor, KI-Prüfung der Anmerkungen; ohne direktes Eclipse-Pendant):
+
+- **Anmerkungstext am Zeilenende:** Der Text jeder Anmerkung steht kursiv am Ende ihrer Zeile im Editor (wie die
+  Inline-Werte des Debuggers), orange für noch zu behebende, grau für erledigte Anmerkungen („must fix (fixed): …“).
+  Er hängt am Highlighter der Anmerkung und wandert beim Editieren mit. Abschaltbar in den Einstellungen („Show the
+  text of the review remarks at the end of their lines in the editor“).
+- **„code changed since review N“:** Anmerkungen früherer Runden, deren Code von den Stops der aktuellen Tours
+  geändert wird, werden so markiert – typischerweise die in dieser Runde korrigierten Stellen. Da die Zeile einer
+  Anmerkung sich auf den Stand bei ihrer Erstellung bezieht, wird sie mit den alten Zeilen der Stops (vor den
+  reviewten Commits) und mit den aktuellen verglichen. Grenze: Haben dazwischen andere Commits Zeilen eingefügt oder
+  entfernt, stimmt die gespeicherte Zeilennummer der Anmerkung nicht mehr (das gilt auch für den Marker selbst).
+- **KI: „Check Remarks“** (ab der zweiten Runde): Das Modell prüft für jede Anmerkung früherer Runden (muss/kann/
+  sonstige), ob die Änderungen sie beheben („fixed“/„not fixed“/„unclear“), mit Begründung, Link zum Stop der
+  Änderung und Link zur Anmerkung. Der vom Autor gesetzte Status wird mitgegeben, soll aber geprüft und nicht
+  übernommen werden.
+
 ## Gefundene und behobene Fehler
 
 - **„Continue review“ fehlte nach einem Absturz** (beim Test der achten Runde gefunden): Das nicht beendete Ticket
