@@ -417,7 +417,7 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
             panel.toggleChecked(checkedStop);
             panel.getStatistics().mark(checkedStop.getAbsoluteFile(), 1, 3);
             final java.nio.file.Path progressFile = Files.createTempDirectory("cort-progress").resolve("DEMO-1.properties");
-            ReviewProgress.capture(2, "one tour per commit", Collections.singleton("whitespace"),
+            ReviewProgress.capture(2, "one tour per commit", Collections.singleton("whitespace"), null,
                     panel.getStatistics(), tours).save(progressFile);
             final ReviewProgress loaded = ReviewProgress.load(progressFile);
             assertNotNull(loaded);

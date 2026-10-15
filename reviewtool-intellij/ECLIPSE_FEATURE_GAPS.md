@@ -214,8 +214,25 @@ Siebte Runde (KI-Unterstützung, zweite Ausbaustufe; ohne Eclipse-Pendant):
   nicht im verlangten Format antworten, führen zu einer verständlichen Meldung.
 - Nach „Accept“/„Reject“ bleibt die Scrollposition im „AI“-Tab erhalten (vorher sprang die Ansicht nach oben).
 
+Achte Runde (Re-Review nur der neuen Änderungen; Eclipse-Pendant: Commit-Auswahl im „Select commits and choose
+filters“-Dialog):
+
+- Der Dialog beim Erstellen der Tours listet die Commits des Tickets chronologisch, dazwischen die Starts der
+  bisherigen Review-Runden aus dem Ticket („Review 1 started 2026-10-10 18:24 by ALICE“). Ab der zweiten Runde sind die
+  Commits seit der letzten Runde vorausgewählt (typischerweise die Korrekturen zu ihren Anmerkungen); „All commits“
+  bzw. „Only the commits since review N“ schalten mit einem Klick um. Die Diffs der Stops beginnen dann beim Stand vor
+  dem ersten ausgewählten Commit, zeigen also genau die neuen Änderungen.
+- Die Auswahl wird mit dem Review-Fortschritt gespeichert; „Continue review“ erstellt dieselben Tours ohne Nachfrage.
+  Eine Benachrichtigung weist darauf hin, dass nur ein Teil der Commits reviewt wird („Create Tours“ fragt neu).
+- Bisher bekam die IntelliJ-Version die Review-Runden gar nicht (leere Liste) und reviewte immer alle Commits.
+- Kleinigkeit: „1 stop“ statt „1 stops“ im Tour-Baum.
+
 ## Gefundene und behobene Fehler
 
+- **„Continue review“ fehlte nach einem Absturz** (beim Test der achten Runde gefunden): Das nicht beendete Ticket
+  wurde nur im Workspace des Projekts gespeichert, den IntelliJ erst später schreibt. Nach einem Absturz oder einem
+  hart beendeten IDE-Prozess stand dort noch ein älteres Ticket, und das Angebot zum Fortsetzen fehlte. Jetzt wird es
+  sofort in eine Datei neben dem gespeicherten Fortschritt geschrieben (mit `kill -9` geprüft).
 - **Stabilitätsrunde für Windows und IntelliJ 2026** (nach den Fehlern aus dem Praxiseinsatz):
   - Kompatibilität: `./gradlew :reviewtool-intellij:verifyPlugin` prüft das Plugin mit dem Plugin Verifier gegen
     IntelliJ 2024.3 und 2026.2 (beide „Compatible“; die drei Aufrufe der in 2026 veralteten `ReadAction.compute` sind

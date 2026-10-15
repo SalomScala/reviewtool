@@ -265,6 +265,18 @@ public final class ReviewToolService {
      * given UI for the user decisions during the tour creation.
      */
     ToursInReview createTours(IChangeData changes, IChangeSourceUi ui, ICreateToursUi createToursUi) {
+        return this.createTours(changes, ui, createToursUi, Collections.<ReviewRoundInfo>emptyList());
+    }
+
+    /**
+     * Builds the review tours like {@link #createTours(IChangeData, IChangeSourceUi)}, but with the
+     * given UI for the user decisions during the tour creation.
+     *
+     * @param reviewRounds The review rounds of the ticket so far (the UI offers to review only the
+     *      commits since the last one).
+     */
+    ToursInReview createTours(IChangeData changes, IChangeSourceUi ui, ICreateToursUi createToursUi,
+            List<ReviewRoundInfo> reviewRounds) {
         return ToursInReview.create(
                 ui,
                 this.createClassificationStrategies(),
@@ -272,7 +284,7 @@ public final class ReviewToolService {
                 this.createStopOrdering(),
                 createToursUi,
                 changes,
-                Collections.<ReviewRoundInfo>emptyList());
+                reviewRounds);
     }
 
     /**

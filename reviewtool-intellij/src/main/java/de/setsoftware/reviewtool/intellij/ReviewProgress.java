@@ -80,14 +80,16 @@ final class ReviewProgress {
     private final int round;
     private final String tourStructure;
     private final Set<String> irrelevantClassifications;
+    private final Set<String> selectedCommits;
     private final Map<String, FileStats> files;
     private final List<StopRef> checkedStops;
 
     ReviewProgress(int round, String tourStructure, Set<String> irrelevantClassifications,
-            Map<String, FileStats> files, List<StopRef> checkedStops) {
+            Set<String> selectedCommits, Map<String, FileStats> files, List<StopRef> checkedStops) {
         this.round = round;
         this.tourStructure = tourStructure;
         this.irrelevantClassifications = irrelevantClassifications;
+        this.selectedCommits = selectedCommits;
         this.files = files;
         this.checkedStops = checkedStops;
     }
@@ -98,9 +100,11 @@ final class ReviewProgress {
      * @param tourStructure The name of the tour structure that was chosen (or null).
      * @param irrelevantClassifications The names of the classifications that were marked as
      *      irrelevant (or null if unknown).
+     * @param selectedCommits The revisions of the commits that were chosen for the review (null if all
+     *      commits are reviewed).
      */
     static ReviewProgress capture(int round, String tourStructure, Set<String> irrelevantClassifications,
-            ViewStatistics statistics, ToursInReview tours) {
+            Set<String> selectedCommits, ViewStatistics statistics, ToursInReview tours) {
         final Set<String> tourFiles = new LinkedHashSet<>();
         for (final Stop stop : allStops(tours)) {
             tourFiles.add(stop.getAbsoluteFile().getPath());
@@ -119,7 +123,7 @@ final class ReviewProgress {
                 checked.add(StopRef.of(stop));
             }
         }
-        return new ReviewProgress(round, tourStructure, irrelevantClassifications, files, checked);
+        return new ReviewProgress(round, tourStructure, irrelevantClassifications, selectedCommits, files, checked);
     }
 
     /**
@@ -174,6 +178,13 @@ final class ReviewProgress {
         return this.irrelevantClassifications;
     }
 
+    /**
+     * The revisions of the commits that were chosen for the review (null if all commits are reviewed).
+     */
+    Set<String> getSelectedCommits() {
+        return this.selectedCommits;
+    }
+
     int getCheckedStopCount() {
         return this.checkedStops.size();
     }
@@ -197,6 +208,13 @@ final class ReviewProgress {
             int i = 0;
             for (final String name : this.irrelevantClassifications) {
                 p.setProperty("irrelevant." + i++, name);
+            }
+        }
+        if (this.selectedCommits != null) {
+            p.setProperty("commit.count", Integer.toString(this.selectedCommits.size()));
+            int i = 0;
+            for (final String revision : this.selectedCommits) {
+                p.setProperty("commit." + i++, revision);
             }
         }
         int i = 0;
@@ -247,6 +265,14 @@ final class ReviewProgress {
                     irrelevant.add(p.getProperty("irrelevant." + i));
                 }
             }
+            Set<String> commits = null;
+            if (p.getProperty("commit.count") != null) {
+                commits = new LinkedHashSet<>();
+                final int count = Integer.parseInt(p.getProperty("commit.count"));
+                for (int i = 0; i < count; i++) {
+                    commits.add(p.getProperty("commit." + i));
+                }
+            }
             final Map<String, FileStats> files = new LinkedHashMap<>();
             final int fileCount = Integer.parseInt(p.getProperty("file.count", "0"));
             for (int i = 0; i < fileCount; i++) {
@@ -261,7 +287,7 @@ final class ReviewProgress {
                 checked.add(new StopRef(p.getProperty("checked." + i + ".path"),
                         Integer.parseInt(lines[0]), Integer.parseInt(lines[1])));
             }
-            return new ReviewProgress(round, p.getProperty("tourStructure"), irrelevant, files, checked);
+            return new ReviewProgress(round, p.getProperty("tourStructure"), irrelevant, commits, files, checked);
         } catch (final IOException | RuntimeException e) {
             Logger.warn("could not read the saved review progress " + file, e);
             return null;

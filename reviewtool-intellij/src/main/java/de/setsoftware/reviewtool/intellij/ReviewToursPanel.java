@@ -978,7 +978,7 @@ public final class ReviewToursPanel extends JPanel {
                 this.setIcon(ReviewToursPanel.this.icons().forTour(tour, active));
                 this.append(firstLine(tour.getDescription()),
                         active ? ACTIVE_TOUR_ATTRIBUTES : SimpleTextAttributes.REGULAR_ATTRIBUTES);
-                this.append("  " + tour.getStops().size() + " stops"
+                this.append("  " + tour.getStops().size() + (tour.getStops().size() == 1 ? " stop" : " stops")
                         + (active ? ", active" : ""), SimpleTextAttributes.GRAYED_ATTRIBUTES);
                 this.setToolTipText(tour.getClassificationFormatted() + tour.getDescription());
             } else if (userObject instanceof StopNode) {
