@@ -319,6 +319,17 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
         }
     }
 
+    public void testWorkingCopyWithCrlfOnlyShowsTheRealChanges() {
+        // on Windows, Git often has LF and the working copy CRLF (core.autocrlf): only the really changed
+        // line must count as changed, not every line
+        final byte[] committed = "class A {\n    int a;\n    int b;\n}\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        final byte[] workingCopy = "class A {\r\n    int a;\r\n    int c;\r\n}\r\n"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        final java.nio.charset.Charset charset = FileTexts.charsetFor(committed, workingCopy);
+        assertEquals("[[2,3) -> [2,3)]", String.valueOf(StopDiffViewer.compare(
+                FileTexts.decode(committed, charset), FileTexts.decode(workingCopy, charset))));
+    }
+
     public void testNavigationDescriptorUsesTheLineStart() throws Exception {
         final com.intellij.psi.PsiFile file =
                 this.myFixture.addFileToProject("Lines.java", "class Lines {\n    int a;\n    int b;\n}\n");

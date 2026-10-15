@@ -6,12 +6,14 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Consumer;
 
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.Computable;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.psi.search.FilenameIndex;
@@ -37,7 +39,7 @@ final class IntellijFileResolver {
         if (shortName == null || shortName.isEmpty()) {
             return null;
         }
-        return ReadAction.compute(() -> {
+        return ApplicationManager.getApplication().runReadAction((Computable<VirtualFile>) () -> {
             final Collection<VirtualFile> candidates =
                     FilenameIndex.getVirtualFilesByName(shortName, GlobalSearchScope.allScope(project));
             return candidates.isEmpty() ? null : candidates.iterator().next();
@@ -75,7 +77,7 @@ final class IntellijFileResolver {
      * click in the tours tree) no longer have read access implicitly.
      */
     static OpenFileDescriptor descriptorForLine(Project project, VirtualFile file, int line) {
-        final int offset = ReadAction.compute(() -> {
+        final int offset = ApplicationManager.getApplication().runReadAction((Computable<Integer>) () -> {
             final Document document = FileDocumentManager.getInstance().getDocument(file);
             if (document == null || document.getLineCount() == 0) {
                 return 0;

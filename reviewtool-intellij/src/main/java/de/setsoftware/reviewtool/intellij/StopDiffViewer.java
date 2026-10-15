@@ -1,6 +1,6 @@
 package de.setsoftware.reviewtool.intellij;
 
-import java.nio.charset.StandardCharsets;
+import java.nio.charset.Charset;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -237,8 +237,12 @@ final class StopDiffViewer {
         final Map<IRevisionedFile, IRevisionedFile> history = stop.getHistory();
         final IRevisionedFile oldFile = history.isEmpty() ? null : history.keySet().iterator().next();
         final IRevisionedFile newFile = stop.getMostRecentFile();
-        final String oldText = oldFile == null ? "" : readContents(oldFile);
-        final String newText = readContents(newFile);
+        final byte[] oldContents = oldFile == null ? null : oldFile.getContents();
+        final byte[] newContents = newFile.getContents();
+        // the same encoding for both sides, like in the core (whose line numbers the stops have)
+        final Charset charset = FileTexts.charsetFor(oldContents, newContents);
+        final String oldText = FileTexts.decode(oldContents, charset);
+        final String newText = FileTexts.decode(newContents, charset);
         final String oldTitle = oldFile == null ? "Before" : "Before (" + describe(oldFile.getRevision()) + ")";
         final String newTitle = "After (" + describe(newFile.getRevision()) + ")";
         final int line = stop.isDetailedFragmentKnown() ? stop.getMostRecentFragment().getFrom().getLine() : 1;
@@ -249,8 +253,9 @@ final class StopDiffViewer {
 
     /**
      * Returns the changed line ranges between the texts (empty if the texts are too big to compare).
+     * Package-private for tests.
      */
-    private static List<StopDiffExcerpt.Change> compare(String oldText, String newText) {
+    static List<StopDiffExcerpt.Change> compare(String oldText, String newText) {
         final List<LineFragment> fragments;
         try {
             fragments = ComparisonManager.getInstance().compareLines(
@@ -365,11 +370,6 @@ final class StopDiffViewer {
         }
         final Date time = new Date(Long.parseLong(m.group(2)) * 1000L);
         return m.group(1).substring(0, 7) + ", " + new SimpleDateFormat("yyyy-MM-dd HH:mm").format(time);
-    }
-
-    private static String readContents(IRevisionedFile file) throws Exception {
-        final byte[] contents = file.getContents();
-        return contents == null ? "" : new String(contents, StandardCharsets.UTF_8);
     }
 
 }
