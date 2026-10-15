@@ -11,6 +11,7 @@ import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
@@ -23,6 +24,7 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.SystemInfo;
 
 import de.setsoftware.reviewtool.base.Logger;
+import de.setsoftware.reviewtool.intellij.OpencodeClient.ModelInfo;
 import de.setsoftware.reviewtool.intellij.OpencodeClient.OpencodeException;
 
 /**
@@ -31,6 +33,8 @@ import de.setsoftware.reviewtool.intellij.OpencodeClient.OpencodeException;
  * 127.0.0.1 and is protected with a random password, so that other local processes cannot use it.
  * It runs in the project directory, so the model can read the project's files (and opencode uses the
  * project's opencode configuration, if there is one).
+ * The model can be chosen in the settings; it is passed with each prompt, so changing it does not
+ * need a restart of the server.
  */
 @Service(Service.Level.PROJECT)
 public final class OpencodeServer implements Disposable {
@@ -45,6 +49,8 @@ public final class OpencodeServer implements Disposable {
     /** Stops opencode if the IDE is terminated without closing the project (e.g. killed with SIGTERM). */
     private Thread shutdownHook;
     private final Deque<String> output = new ArrayDeque<>();
+    /** The result of the last {@link #probe}, so that the settings can show the models' names again. */
+    private volatile Probe lastProbe;
 
     public OpencodeServer(Project project) {
         this.project = project;
@@ -78,19 +84,88 @@ public final class OpencodeServer implements Disposable {
     }
 
     /**
-     * Starts opencode with the given executable (e.g. from the not yet saved settings), checks that
-     * it works and stops it again. Returns a report for the user.
+     * What a temporarily started opencode reported.
      */
-    String check(String executable, BooleanSupplier canceled) {
+    static final class Probe {
+        private final String version;
+        private final String configuredModel;
+        private final List<ModelInfo> models;
+
+        Probe(String version, String configuredModel, List<ModelInfo> models) {
+            this.version = version;
+            this.configuredModel = configuredModel;
+            this.models = models;
+        }
+
+        String getVersion() {
+            return this.version;
+        }
+
+        /**
+         * The default model of the opencode configuration, or null if none is configured.
+         */
+        String getConfiguredModel() {
+            return this.configuredModel;
+        }
+
+        /**
+         * The models opencode offers.
+         */
+        List<ModelInfo> getModels() {
+            return this.models;
+        }
+
+        /**
+         * Returns a report for the user, for the model chosen in the (maybe not yet saved) settings.
+         */
+        String report(String chosenModel) {
+            final StringBuilder ret = new StringBuilder("opencode " + this.version + " works.\n\n");
+            final String configured = this.configuredModel == null ? "opencode's default" : this.configuredModel;
+            if (chosenModel == null || chosenModel.trim().isEmpty()) {
+                ret.append("Model (from the opencode configuration): ").append(configured);
+            } else if (this.offers(chosenModel.trim())) {
+                ret.append("Model (chosen in the settings): ").append(chosenModel.trim());
+            } else {
+                ret.append("The model chosen in the settings (").append(chosenModel.trim())
+                        .append(") is not available in opencode. Choose one of the ").append(this.models.size())
+                        .append(" available models or the default of the opencode configuration (")
+                        .append(configured).append(").");
+            }
+            ret.append("\n\nAvailable models: ").append(this.models.size());
+            return ret.toString();
+        }
+
+        private boolean offers(String model) {
+            for (final ModelInfo m : this.models) {
+                if (m.getId().equals(model)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Starts opencode with the given executable (e.g. from the not yet saved settings), asks it for its
+     * version and models and stops it again.
+     */
+    Probe probe(String executable, BooleanSupplier canceled) {
         final Started started = this.startProcess(executable, canceled);
         try {
-            final String version = started.client.health();
-            final String model = started.client.configuredModel();
-            return "opencode " + version + " works.\n\nModel (from the opencode configuration): "
-                    + (model == null ? "opencode's default" : model);
+            final Probe probe = new Probe(started.client.health(), started.client.configuredModel(),
+                    started.client.availableModels());
+            this.lastProbe = probe;
+            return probe;
         } finally {
             destroy(started.process);
         }
+    }
+
+    /**
+     * Returns the result of the last {@link #probe} (null if there was none since the IDE was started).
+     */
+    Probe getLastProbe() {
+        return this.lastProbe;
     }
 
     /**

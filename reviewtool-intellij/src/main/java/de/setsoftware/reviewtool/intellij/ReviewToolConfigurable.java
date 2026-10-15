@@ -1,8 +1,13 @@
 package de.setsoftware.reviewtool.intellij;
 
 import java.awt.FlowLayout;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 
+import javax.swing.Box;
 import javax.swing.JButton;
 import javax.swing.JComponent;
 import javax.swing.JPanel;
@@ -14,7 +19,9 @@ import com.intellij.openapi.options.ConfigurationException;
 import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.ComboBox;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.ui.ComboboxSpeedSearch;
 import com.intellij.ui.TitledSeparator;
 import com.intellij.ui.components.JBCheckBox;
 import com.intellij.ui.components.JBLabel;
@@ -24,6 +31,8 @@ import com.intellij.util.ui.FormBuilder;
 import com.intellij.util.ui.JBUI;
 import com.intellij.util.ui.UIUtil;
 
+import de.setsoftware.reviewtool.intellij.OpencodeClient.ModelInfo;
+import de.setsoftware.reviewtool.intellij.OpencodeServer.Probe;
 import de.setsoftware.reviewtool.intellij.ReviewToolSettings.SettingsState;
 
 /**
@@ -31,6 +40,38 @@ import de.setsoftware.reviewtool.intellij.ReviewToolSettings.SettingsState;
  * grouped by topic, and the YouTrack connection and field names can be checked with "Test Connection".
  */
 public class ReviewToolConfigurable implements Configurable {
+
+    /**
+     * An entry of the model selection: the default of the opencode configuration (empty id) or a model.
+     */
+    static final class ModelItem {
+        private final String id;
+        private final String label;
+
+        ModelItem(String id, String label) {
+            this.id = id;
+            this.label = label;
+        }
+
+        String getId() {
+            return this.id;
+        }
+
+        @Override
+        public String toString() {
+            return this.label;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof ModelItem && ((ModelItem) o).id.equals(this.id);
+        }
+
+        @Override
+        public int hashCode() {
+            return this.id.hashCode();
+        }
+    }
 
     private final Project project;
 
@@ -54,6 +95,7 @@ public class ReviewToolConfigurable implements Configurable {
     private JBCheckBox aiEnabledBox;
     private JBCheckBox showRemarksInEditorBox;
     private JBTextField opencodePathField;
+    private ComboBox<ModelItem> modelCombo;
     /** The token as loaded from the settings (null while it is loaded in the background). */
     private String loadedToken;
 
@@ -98,8 +140,15 @@ public class ReviewToolConfigurable implements Configurable {
         this.opencodePathField.getEmptyText().setText("opencode (from the PATH)");
         final JButton checkOpencodeButton = new JButton("Check opencode");
         checkOpencodeButton.addActionListener((e) -> this.checkOpencode());
+        final JButton loadModelsButton = new JButton("Load Models");
+        loadModelsButton.addActionListener((e) -> this.loadModels());
         final JPanel checkOpencodePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         checkOpencodePanel.add(checkOpencodeButton);
+        checkOpencodePanel.add(Box.createHorizontalStrut(JBUI.scale(6)));
+        checkOpencodePanel.add(loadModelsButton);
+        // a fixed width: opencode can offer hundreds of models with long names
+        this.modelCombo = new ComboBox<>(JBUI.scale(420));
+        ComboboxSpeedSearch.installSpeedSearch(this.modelCombo, ModelItem::toString);
 
         this.urlField.getEmptyText().setText("e.g. https://youtrack.example.com");
         final JButton testButton = new JButton("Test Connection");
@@ -138,9 +187,11 @@ public class ReviewToolConfigurable implements Configurable {
                 .addComponent(new TitledSeparator("AI Support (opencode)"))
                 .addComponent(this.aiEnabledBox)
                 .addComponent(hint("<html>CoRT starts your local opencode in the project directory and sends the diffs"
-                        + " of the review<br>to the model configured in opencode. The model may read the project's"
+                        + " of the review<br>to the chosen model. The model may read the project's"
                         + " files but cannot change anything.</html>"))
                 .addLabeledComponent("opencode executable:", this.opencodePathField)
+                .addLabeledComponent("Model:", this.modelCombo)
+                .addComponentToRightColumn(hint("\"Load Models\" lists the models opencode can use; type to search"))
                 .addComponentToRightColumn(checkOpencodePanel)
                 .addComponent(new TitledSeparator("Grouping and Order of the Stops in a Tour"))
                 .addComponent(new JBLabel("<html>The active relations are used (in this priority order) to group"
@@ -197,27 +248,102 @@ public class ReviewToolConfigurable implements Configurable {
     }
 
     /**
-     * Starts opencode with the entered executable and shows its version and model.
+     * Starts opencode with the entered executable and shows its version and model (and updates the list
+     * of the models).
      */
     private void checkOpencode() {
+        final Probe probe = this.probeOpencode("Checking opencode", "Check opencode");
+        if (probe != null) {
+            this.setModels(probe);
+            Messages.showInfoMessage(this.panel, probe.report(this.getSelectedModel()), "Check opencode");
+        }
+    }
+
+    /**
+     * Asks opencode for the models it offers and shows them in the model selection.
+     */
+    private void loadModels() {
+        final Probe probe = this.probeOpencode("Loading the models of opencode", "Load Models");
+        if (probe != null) {
+            this.setModels(probe);
+            if (probe.getModels().isEmpty()) {
+                Messages.showWarningDialog(this.panel, "opencode offers no models. Configure a provider in"
+                        + " opencode, e.g. with \"opencode auth login\".", "Load Models");
+            } else {
+                // with the focus in the combo box, typing searches the models
+                this.modelCombo.requestFocusInWindow();
+                this.modelCombo.showPopup();
+            }
+        }
+    }
+
+    /**
+     * Starts opencode with the entered executable in the background and asks it for its version and
+     * models. Shows errors and returns null if there was one (or the user canceled).
+     */
+    private Probe probeOpencode(String progressTitle, String dialogTitle) {
         final String executable = this.opencodePathField.getText().trim().isEmpty()
                 ? "opencode" : this.opencodePathField.getText().trim();
-        final AtomicReference<String> report = new AtomicReference<>();
+        final AtomicReference<Probe> result = new AtomicReference<>();
         final AtomicReference<Exception> error = new AtomicReference<>();
+        final BooleanSupplier canceled = () -> ProgressManager.getInstance().getProgressIndicator() != null
+                && ProgressManager.getInstance().getProgressIndicator().isCanceled();
         ProgressManager.getInstance().runProcessWithProgressSynchronously(() -> {
             try {
-                report.set(OpencodeServer.getInstance(this.project).check(executable,
-                        () -> ProgressManager.getInstance().getProgressIndicator() != null
-                                && ProgressManager.getInstance().getProgressIndicator().isCanceled()));
+                result.set(OpencodeServer.getInstance(this.project).probe(executable, canceled));
             } catch (final RuntimeException e) {
                 error.set(e);
             }
-        }, "Checking opencode", true, this.project);
+        }, progressTitle, true, this.project);
         if (error.get() != null) {
-            Messages.showErrorDialog(this.panel, String.valueOf(error.get().getMessage()), "Check opencode");
-        } else if (report.get() != null) {
-            Messages.showInfoMessage(this.panel, report.get(), "Check opencode");
+            Messages.showErrorDialog(this.panel, String.valueOf(error.get().getMessage()), dialogTitle);
+            return null;
         }
+        return result.get();
+    }
+
+    /**
+     * Shows the models of the probe in the model selection (keeping the selected model).
+     */
+    private void setModels(Probe probe) {
+        this.showModels(probe, this.getSelectedModel());
+    }
+
+    private void showModels(Probe probe, String selected) {
+        this.modelCombo.removeAllItems();
+        for (final ModelItem item : modelItems(probe, selected)) {
+            this.modelCombo.addItem(item);
+            if (item.getId().equals(selected)) {
+                this.modelCombo.setSelectedItem(item);
+            }
+        }
+    }
+
+    /**
+     * Returns the entries of the model selection: the default of the opencode configuration, the models
+     * opencode offers (if known) and the selected model (if it is not one of them).
+     *
+     * @param probe The models opencode offers, or null if they are unknown (not loaded yet).
+     */
+    static List<ModelItem> modelItems(Probe probe, String selected) {
+        final List<ModelItem> ret = new ArrayList<>();
+        final String configured = probe == null ? null : probe.getConfiguredModel();
+        ret.add(new ModelItem("", "Default of the opencode configuration"
+                + (configured == null ? "" : " (" + configured + ")")));
+        if (probe != null) {
+            for (final ModelInfo model : probe.getModels()) {
+                ret.add(new ModelItem(model.getId(), model.toString()));
+            }
+        }
+        if (!selected.isEmpty() && !ret.contains(new ModelItem(selected, ""))) {
+            ret.add(new ModelItem(selected, probe == null ? selected : selected + "  (not available in opencode)"));
+        }
+        return ret;
+    }
+
+    private String getSelectedModel() {
+        final Object item = this.modelCombo.getSelectedItem();
+        return item instanceof ModelItem ? ((ModelItem) item).getId() : "";
     }
 
     private ReviewToolSettings getSettings() {
@@ -245,7 +371,8 @@ public class ReviewToolConfigurable implements Configurable {
                 || !this.stopOrderingTable.getSettings().equals(StopOrderingSettings.normalize(s.stopOrdering))
                 || this.aiEnabledBox.isSelected() != s.aiEnabled
                 || this.showRemarksInEditorBox.isSelected() != s.showRemarksInEditor
-                || !this.opencodePathField.getText().trim().equals(s.opencodePath);
+                || !this.opencodePathField.getText().trim().equals(s.opencodePath)
+                || !this.getSelectedModel().equals(Objects.toString(s.aiModel, ""));
     }
 
     @Override
@@ -283,6 +410,7 @@ public class ReviewToolConfigurable implements Configurable {
         s.aiEnabled = this.aiEnabledBox.isSelected();
         s.showRemarksInEditor = this.showRemarksInEditorBox.isSelected();
         s.opencodePath = this.opencodePathField.getText().trim();
+        s.aiModel = this.getSelectedModel();
     }
 
     @Override
@@ -307,6 +435,7 @@ public class ReviewToolConfigurable implements Configurable {
         this.aiEnabledBox.setSelected(s.aiEnabled);
         this.showRemarksInEditorBox.setSelected(s.showRemarksInEditor);
         this.opencodePathField.setText(s.opencodePath);
+        this.showModels(OpencodeServer.getInstance(this.project).getLastProbe(), Objects.toString(s.aiModel, ""));
     }
 
     private boolean isTokenModified() {

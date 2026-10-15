@@ -184,8 +184,9 @@ Fünfte Runde (Wunschliste: Fortschritt über Neustarts, Anmerkungen im Diff, kl
 Sechste Runde (KI-Unterstützung, erste Ausbaustufe; ohne Eclipse-Pendant):
 
 - **Anbindung über opencode:** CoRT startet bei Bedarf ein lokales `opencode serve` im Projektverzeichnis (nur
-  127.0.0.1, zufälliges Passwort) und beendet es mit dem Projekt bzw. der IDE. Das Modell wird ausschließlich in der
-  opencode-Konfiguration gepflegt; CoRT wählt kein Modell und speichert keine API-Keys. Standardmäßig aus;
+  127.0.0.1, zufälliges Passwort) und beendet es mit dem Projekt bzw. der IDE. Das Modell wird in der
+  opencode-Konfiguration gepflegt (seit der zehnten Runde optional in den CoRT-Einstellungen wählbar); CoRT speichert
+  keine API-Keys. Standardmäßig aus;
   einschalten unter „AI Support (opencode)“, „Check opencode“ zeigt Version und konfiguriertes Modell.
 - **Schreibgeschützte Sitzungen:** Die opencode-Sitzung erlaubt nur Lesen/Suchen im Projekt (`read`, `grep`, `glob`,
   `list`); alle anderen Werkzeuge (Bearbeiten, Shell, Web, …) werden gar nicht erst angeboten (im Test geprüft).
@@ -242,6 +243,21 @@ Neunte Runde (Anmerkungen im Editor, KI-Prüfung der Anmerkungen; ohne direktes 
   sonstige), ob die Änderungen sie beheben („fixed“/„not fixed“/„unclear“), mit Begründung, Link zum Stop der
   Änderung und Link zur Anmerkung. Der vom Autor gesetzte Status wird mitgegeben, soll aber geprüft und nicht
   übernommen werden.
+
+Zehnte Runde (Modellauswahl für die KI-Funktionen; ohne Eclipse-Pendant):
+
+- **„Model“ in den Einstellungen** („AI Support (opencode)“): Standard bleibt das Modell der opencode-Konfiguration.
+  „Load Models“ startet opencode kurz und listet die Modelle, die es nutzen kann (Anbieter mit Zugangsdaten und die
+  freien Modelle, `GET /config/providers`), als „Anbieter: Name (provider/model)“; Tippen in der Auswahl sucht (bei
+  vielen Anbietern sind das schnell Hunderte). „Check opencode“ zeigt zusätzlich das verwendete Modell und die Zahl
+  der verfügbaren Modelle.
+- Das gewählte Modell wird bei jeder Anfrage mitgeschickt (`model: {providerID, modelID}`; die Modell-ID darf selbst
+  „/“ enthalten, getrennt wird am ersten „/“). Ein Wechsel gilt ab der nächsten Anfrage, auch in einer laufenden
+  Sitzung, ohne Neustart von opencode. Der „AI“-Tab nennt das Modell mit Link „change“ zu den Einstellungen.
+- Ein nicht (mehr) verfügbares Modell prüft CoRT vor dem Senden selbst, denn opencode antwortet darauf nur mit
+  „Unexpected server error“ (HTTP 500). Die Meldung nennt das Modell und verlinkt die Einstellungen; dort ist es als
+  „(not available in opencode)“ markiert, sobald die Modelle geladen sind.
+- Weiterhin speichert CoRT keine API-Keys; Anbieter und Zugangsdaten bleiben Sache der opencode-Konfiguration.
 
 ## Gefundene und behobene Fehler
 
