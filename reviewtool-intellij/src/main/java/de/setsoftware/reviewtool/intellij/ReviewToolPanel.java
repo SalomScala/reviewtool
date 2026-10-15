@@ -11,6 +11,7 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.SimpleDateFormat;
@@ -86,6 +87,7 @@ import de.setsoftware.reviewtool.model.api.IRevisionedFile;
 import de.setsoftware.reviewtool.model.api.PositionReference;
 import de.setsoftware.reviewtool.model.changestructure.Stop;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
+import de.setsoftware.reviewtool.model.changestructure.ToursInReview.ReviewRoundInfo;
 import de.setsoftware.reviewtool.model.remarks.DummyMarker;
 import de.setsoftware.reviewtool.model.remarks.FileLinePosition;
 import de.setsoftware.reviewtool.model.remarks.FilePosition;
@@ -112,6 +114,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     private static final String MODE_KEY = "de.setsoftware.reviewtool.mode";
     /** The ticket whose review/fixing was started and not finished yet (e.g. paused), per project. */
     private static final String UNFINISHED_TICKET_KEY = "de.setsoftware.reviewtool.unfinishedTicket";
+    private static final String UNFINISHED_TICKET_FILE = "unfinished-ticket.txt";
     /** Prefix for the backup of remarks that were changed but not saved to the ticket yet. */
     private static final String UNSAVED_REMARKS_PREFIX = "de.setsoftware.reviewtool.unsavedRemarks.";
     /** Suffix of the property with the remarks of the ticket the unsaved changes were based on. */
@@ -176,6 +179,8 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     /** The ticket whose review or fixing has been started and not ended yet, or null. */
     private String workingOnKey;
     private int currentRound;
+    /** The review rounds of the current ticket so far (to offer reviewing only the commits since the last one). */
+    private List<ReviewRoundInfo> reviewRounds = Collections.emptyList();
     private int lastOpenRemarkCount;
     /** False while the remarks of the shown ticket are loading or could not be loaded. */
     private boolean remarksLoaded = true;
@@ -439,7 +444,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
      */
     private void addUnfinishedTicket(YouTrackConnector connector, int generation) {
         // stored as "mode:key", the ticket is only shown in the list of its mode
-        final String stored = PropertiesComponent.getInstance(this.project).getValue(UNFINISHED_TICKET_KEY, "");
+        final String stored = this.getUnfinishedTicket();
         final String prefix = this.modeBox.getSelectedItem() + ":";
         if (!stored.startsWith(prefix)) {
             return;
@@ -988,10 +993,14 @@ public class ReviewToolPanel extends JPanel implements Disposable {
             final TicketInfo info = ticket == null ? null : ticket.getTicketInfo();
             int round = 1;
             String reviewer = null;
+            final List<ReviewRoundInfo> rounds = new ArrayList<>();
             try {
                 if (ticket != null) {
                     round = Math.max(1, ticket.getCurrentRound());
                     reviewer = ticket.getReviewerForRound(round);
+                    for (int r = 1; r <= ticket.getCurrentRound(); r++) {
+                        rounds.add(new ReviewRoundInfo(r, ticket.getEndTimeForRound(r), ticket.getReviewerForRound(r)));
+                    }
                 }
             } catch (final RuntimeException e) {
                 // the remarks are still usable, they are just attributed to the local user / round 1
@@ -1008,6 +1017,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                 this.remarksArea.setEditable(true);
                 this.currentTicketInfo = info;
                 this.currentRound = finalRound;
+                this.reviewRounds = rounds;
                 this.updateCurrentTicketLabel();
                 this.ensureCurrentTicketListed();
                 this.updateRowKeepingHistory(info);
@@ -1149,8 +1159,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                 + " The ticket list is hidden while you work on the ticket.");
         this.workingOnKey = key;
         this.parkedWorkingTours = null;
-        PropertiesComponent.getInstance(this.project).setValue(
-                UNFINISHED_TICKET_KEY, this.modeBox.getSelectedItem() + ":" + key);
+        this.setUnfinishedTicket(this.modeBox.getSelectedItem() + ":" + key);
         this.setTicketListVisible(false);
         this.updateModeBoxEnabled();
         if (review) {
@@ -1202,7 +1211,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
             if (this.workingOnKey != null) {
                 this.deleteProgress(this.workingOnKey);
             }
-            PropertiesComponent.getInstance(this.project).unsetValue(UNFINISHED_TICKET_KEY);
+            this.setUnfinishedTicket(null);
             // the state of the ticket changed
             this.refreshCurrentTicketInfo();
         } else {
@@ -1567,13 +1576,18 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         final ReviewProgress saved = continueReview ? this.loadProgressOfCurrentRound(key) : null;
         final IntellijCreateToursUi choices = saved == null
                 ? new IntellijCreateToursUi(this.project)
-                : new IntellijCreateToursUi(this.project, saved.getTourStructure(), saved.getIrrelevantClassifications());
+                : new IntellijCreateToursUi(this.project, saved.getTourStructure(), saved.getIrrelevantClassifications(),
+                        saved.getSelectedCommits());
+        // the review rounds belong to the loaded ticket (they are unknown without the remarks)
+        final List<ReviewRoundInfo> rounds = key.equals(this.currentTicketKey) && this.remarksLoaded
+                ? this.reviewRounds : Collections.<ReviewRoundInfo>emptyList();
         new Task.Backgroundable(this.project, "Creating review tours for " + key, true) {
             @Override
             public void run(ProgressIndicator indicator) {
                 try {
                     final ToursInReview tours = ReviewToolPanel.this.getService().createTours(
-                            changes, new ChangeSourceUiAdapter(ReviewToolPanel.this.project, indicator), choices);
+                            changes, new ChangeSourceUiAdapter(ReviewToolPanel.this.project, indicator), choices,
+                            rounds);
                     if (tours == null) {
                         return;
                     }
@@ -1584,6 +1598,12 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                         ReviewToolPanel.this.summaryPanel.setTours(tours);
                         ReviewToolPanel.this.rightTabs.setSelectedIndex(TAB_TOURS);
                         ReviewToolPanel.this.toursCreated(key, tours, saved);
+                        if (choices.getChosenCommits() != null) {
+                            IntellijNotifications.info(ReviewToolPanel.this.project, "Only "
+                                    + choices.getChosenCommits().size() + " of the " + choices.getAllCommitCount()
+                                    + " commits of " + key + " are reviewed. Use \"Create Tours\" to choose"
+                                    + " other commits.");
+                        }
                     });
                 } catch (final ProcessCanceledException e) {
                     throw e;
@@ -1634,8 +1654,48 @@ public class ReviewToolPanel extends JPanel implements Disposable {
      * directory, separately for each project).
      */
     private Path progressFile(String key) {
-        return PathManager.getSystemDir().resolve("cort-review-progress").resolve(this.project.getLocationHash())
-                .resolve(key.replaceAll("[^A-Za-z0-9_.-]", "_") + ".properties");
+        return this.progressDir().resolve(key.replaceAll("[^A-Za-z0-9_.-]", "_") + ".properties");
+    }
+
+    private Path progressDir() {
+        return PathManager.getSystemDir().resolve("cort-review-progress").resolve(this.project.getLocationHash());
+    }
+
+    /**
+     * Returns the ticket whose review/fixing has not been finished ("mode:key"), or "" if there is none.
+     */
+    private String getUnfinishedTicket() {
+        final Path file = this.progressDir().resolve(UNFINISHED_TICKET_FILE);
+        try {
+            if (Files.isRegularFile(file)) {
+                return new String(Files.readAllBytes(file), StandardCharsets.UTF_8).trim();
+            }
+        } catch (final IOException e) {
+            Logger.warn("could not read " + file, e);
+        }
+        // stored in the project's workspace by older versions
+        return PropertiesComponent.getInstance(this.project).getValue(UNFINISHED_TICKET_KEY, "");
+    }
+
+    /**
+     * Remembers the ticket whose review/fixing has not been finished ("mode:key", null when there is
+     * none). It is written to a file right away (the project's workspace is only saved later, so after
+     * a crash or when the IDE is killed, it would still contain an older ticket).
+     */
+    private void setUnfinishedTicket(String modeAndKey) {
+        final Path file = this.progressDir().resolve(UNFINISHED_TICKET_FILE);
+        try {
+            if (modeAndKey == null) {
+                Files.deleteIfExists(file);
+                PropertiesComponent.getInstance(this.project).unsetValue(UNFINISHED_TICKET_KEY);
+            } else {
+                Files.createDirectories(file.getParent());
+                Files.write(file, modeAndKey.getBytes(StandardCharsets.UTF_8));
+                PropertiesComponent.getInstance(this.project).setValue(UNFINISHED_TICKET_KEY, modeAndKey);
+            }
+        } catch (final IOException e) {
+            Logger.warn("could not write " + file, e);
+        }
     }
 
     private boolean isProgressToBeSaved() {
@@ -1663,6 +1723,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         final ReviewProgress progress = ReviewProgress.capture(this.currentRound,
                 choices == null ? null : choices.getChosenTourStructure(),
                 choices == null ? null : choices.getChosenIrrelevant(),
+                choices == null ? null : choices.getChosenCommits(),
                 this.toursPanel.getStatistics(), this.toursPanel.getTours());
         final Path file = this.progressFile(this.workingOnKey);
         final Runnable write = () -> {
@@ -1697,7 +1758,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
             return;
         }
         this.continueReviewOffered = true;
-        final String stored = PropertiesComponent.getInstance(this.project).getValue(UNFINISHED_TICKET_KEY, "");
+        final String stored = this.getUnfinishedTicket();
         final String prefix = ReviewToolService.FILTER_REVIEW + ":";
         if (!stored.startsWith(prefix)) {
             return;

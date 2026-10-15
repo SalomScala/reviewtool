@@ -42,4 +42,18 @@ public class ReviewProgressTest {
         assertNull(ReviewProgress.load(future));
     }
 
+    @Test
+    public void testSelectedCommitsAreSaved() throws IOException {
+        final Path file = Files.createTempDirectory("cort-progress").resolve("DEMO-2.properties");
+        final java.util.Set<String> commits = new java.util.LinkedHashSet<>(java.util.Arrays.asList("c3", "d4"));
+        new ReviewProgress(2, "one tour per commit", java.util.Collections.singleton("whitespace"), commits,
+                new TreeMap<>(), new java.util.ArrayList<>()).save(file);
+        final ReviewProgress loaded = ReviewProgress.load(file);
+        assertEquals(commits, loaded.getSelectedCommits());
+        assertEquals(java.util.Collections.singleton("whitespace"), loaded.getIrrelevantClassifications());
+        // all commits
+        new ReviewProgress(2, null, null, null, new TreeMap<>(), new java.util.ArrayList<>()).save(file);
+        assertNull(ReviewProgress.load(file).getSelectedCommits());
+    }
+
 }

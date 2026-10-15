@@ -24,8 +24,9 @@ import de.setsoftware.reviewtool.model.changestructure.ToursInReview.UserSelecte
  * IntelliJ implementation of the tour creation UI. It lets the user choose the tour structure
  * (the "tour ordering" step) when there is more than one possibility and otherwise picks the only
  * available structure. It also lets the user pick which of the automatically detected change
- * classifications should be treated as irrelevant for the review. All commits are always kept.
- * The choices are recorded (so that they can be saved with the review progress), and choices made
+ * classifications should be treated as irrelevant for the review and, if there is more than one
+ * commit, which commits to review (from the second review round on, the commits since the last round
+ * are preselected). The choices are recorded (so that they can be saved with the review progress), and choices made
  * earlier can be given, so that the same tours are created again without asking the user.
  */
 public final class IntellijCreateToursUi implements ICreateToursUi {
@@ -33,11 +34,14 @@ public final class IntellijCreateToursUi implements ICreateToursUi {
     private final Project project;
     private final String presetTourStructure;
     private final Set<String> presetIrrelevant;
+    private final Set<String> presetCommits;
     private String chosenTourStructure;
     private Set<String> chosenIrrelevant;
+    private Set<String> chosenCommits;
+    private int allCommitCount;
 
     public IntellijCreateToursUi(Project project) {
-        this(project, null, null);
+        this(project, null, null, null);
     }
 
     /**
@@ -46,11 +50,14 @@ public final class IntellijCreateToursUi implements ICreateToursUi {
      *
      * @param presetTourStructure The name of the tour structure to choose.
      * @param presetIrrelevant The names of the classifications to mark as irrelevant.
+     * @param presetCommits The revisions of the commits to review (null for all commits).
      */
-    public IntellijCreateToursUi(Project project, String presetTourStructure, Set<String> presetIrrelevant) {
+    public IntellijCreateToursUi(Project project, String presetTourStructure, Set<String> presetIrrelevant,
+            Set<String> presetCommits) {
         this.project = project;
         this.presetTourStructure = presetTourStructure;
         this.presetIrrelevant = presetIrrelevant;
+        this.presetCommits = presetCommits;
     }
 
     /**
@@ -65,6 +72,21 @@ public final class IntellijCreateToursUi implements ICreateToursUi {
      */
     public Set<String> getChosenIrrelevant() {
         return this.chosenIrrelevant;
+    }
+
+    /**
+     * Returns the revisions of the commits that have been chosen for the review, or null if all commits
+     * are reviewed (or nothing has been chosen yet).
+     */
+    public Set<String> getChosenCommits() {
+        return this.chosenCommits;
+    }
+
+    /**
+     * Returns the number of commits of the review (all, not only the chosen ones).
+     */
+    public int getAllCommitCount() {
+        return this.allCommitCount;
     }
 
     @Override
@@ -116,14 +138,12 @@ public final class IntellijCreateToursUi implements ICreateToursUi {
             Multiset<IClassification> strategyResults,
             List<ReviewRoundInfo> reviewRounds) {
         final List<IClassification> classifications = new ArrayList<>(strategyResults.keySet());
-        if (classifications.isEmpty()) {
-            this.chosenIrrelevant = Collections.emptySet();
-            return new UserSelectedReductions(
-                    new ArrayList<>(changes),
-                    Collections.<IClassification>emptySet());
-        }
+        final List<ICommit> commits = CommitSelection.sortedByTime(changes);
+        this.allCommitCount = commits.size();
+        final ReviewRoundInfo lastReviewed = CommitSelection.lastReviewedRound(commits, reviewRounds);
 
         if (this.presetIrrelevant != null) {
+            // the choices made when the review was started
             final Set<IClassification> irrelevant = new LinkedHashSet<>();
             for (final IClassification c : classifications) {
                 if (this.presetIrrelevant.contains(c.getName())) {
@@ -131,20 +151,33 @@ public final class IntellijCreateToursUi implements ICreateToursUi {
                 }
             }
             this.chosenIrrelevant = names(irrelevant);
-            return new UserSelectedReductions(new ArrayList<>(changes), irrelevant);
+            final List<ICommit> selected = this.presetCommits == null
+                    ? commits : CommitSelection.withRevisions(commits, this.presetCommits);
+            this.chosenCommits = revisions(selected, commits);
+            return new UserSelectedReductions(selected, irrelevant);
+        }
+
+        if (classifications.isEmpty() && lastReviewed == null) {
+            this.chosenIrrelevant = Collections.emptySet();
+            this.chosenCommits = null;
+            return new UserSelectedReductions(commits, Collections.<IClassification>emptySet());
         }
 
         final List<Integer> counts = new ArrayList<>();
         for (final IClassification c : classifications) {
             counts.add(strategyResults.get(c));
         }
+        // from the second review round on, usually only the changes since the last round are of interest
+        final List<ICommit> preselected = lastReviewed == null ? commits : CommitSelection.since(commits, lastReviewed);
 
         final AtomicReference<Set<IClassification>> irrelevant = new AtomicReference<>();
+        final AtomicReference<List<ICommit>> selected = new AtomicReference<>();
         ApplicationManager.getApplication().invokeAndWait(() -> {
-            final SelectIrrelevantDialog dialog =
-                    new SelectIrrelevantDialog(this.project, classifications, counts);
+            final SelectIrrelevantDialog dialog = new SelectIrrelevantDialog(this.project, classifications, counts,
+                    commits, reviewRounds == null ? Collections.emptyList() : reviewRounds, lastReviewed, preselected);
             if (dialog.showAndGet()) {
                 irrelevant.set(new LinkedHashSet<>(dialog.getSelectedClassifications()));
+                selected.set(dialog.getSelectedCommits());
             }
         });
         if (irrelevant.get() == null) {
@@ -152,7 +185,22 @@ public final class IntellijCreateToursUi implements ICreateToursUi {
             return null;
         }
         this.chosenIrrelevant = names(irrelevant.get());
-        return new UserSelectedReductions(new ArrayList<>(changes), irrelevant.get());
+        this.chosenCommits = revisions(selected.get(), commits);
+        return new UserSelectedReductions(selected.get(), irrelevant.get());
+    }
+
+    /**
+     * The revisions of the selected commits, or null if all commits are selected.
+     */
+    private static Set<String> revisions(List<ICommit> selected, List<ICommit> all) {
+        if (selected.size() == all.size()) {
+            return null;
+        }
+        final Set<String> ret = new LinkedHashSet<>();
+        for (final ICommit commit : selected) {
+            ret.add(CommitSelection.revision(commit));
+        }
+        return ret;
     }
 
     private static Set<String> names(Set<IClassification> classifications) {
