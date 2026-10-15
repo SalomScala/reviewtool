@@ -10,15 +10,17 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Deque;
-import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
+import com.intellij.execution.ExecutionException;
+import com.intellij.execution.configurations.GeneralCommandLine;
+import com.intellij.execution.configurations.PathEnvironmentVariableUtil;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.SystemInfo;
 
 import de.setsoftware.reviewtool.base.Logger;
 import de.setsoftware.reviewtool.intellij.OpencodeClient.OpencodeException;
@@ -104,6 +106,19 @@ public final class OpencodeServer implements Disposable {
         }
     }
 
+    /**
+     * Resolves a command name without a path and without an extension on Windows with the PATH and the
+     * extensions of PATHEXT, e.g. "opencode" to "C:\Users\...\npm\opencode.cmd" (starting a
+     * process only finds ".exe" files by itself). Everything else is returned unchanged.
+     */
+    static String resolveExecutable(String executable) {
+        if (!SystemInfo.isWindows || executable.contains("/") || executable.contains("\\")
+                || executable.contains(".")) {
+            return executable;
+        }
+        return PathEnvironmentVariableUtil.findExecutableInWindowsPath(executable, executable);
+    }
+
     private String executable() {
         final String configured = ReviewToolSettings.getInstance(this.project).getState().opencodePath;
         return configured == null || configured.trim().isEmpty() ? "opencode" : configured.trim();
@@ -112,26 +127,23 @@ public final class OpencodeServer implements Disposable {
     private Started startProcess(String executable, BooleanSupplier canceled) {
         final int port = freePort();
         final String password = randomPassword();
-        final List<String> command = new ArrayList<>();
-        command.add(executable);
-        command.add("serve");
-        command.add("--hostname");
-        command.add("127.0.0.1");
-        command.add("--port");
-        command.add(Integer.toString(port));
-        final ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
+        final GeneralCommandLine commandLine = new GeneralCommandLine(resolveExecutable(executable))
+                .withParameters("serve", "--hostname", "127.0.0.1", "--port", Integer.toString(port))
+                .withRedirectErrorStream(true)
+                .withEnvironment("OPENCODE_SERVER_PASSWORD", password);
         final String basePath = this.project.getBasePath();
         if (basePath != null && new File(basePath).isDirectory()) {
-            builder.directory(new File(basePath));
+            commandLine.setWorkDirectory(basePath);
         }
-        builder.environment().put("OPENCODE_SERVER_PASSWORD", password);
         synchronized (this.output) {
             this.output.clear();
         }
         final Process started;
         try {
-            started = builder.start();
-        } catch (final IOException e) {
+            // GeneralCommandLine starts batch files (like the "opencode.cmd" npm installs on Windows) via
+            // cmd.exe with the right quoting
+            started = commandLine.createProcess();
+        } catch (final ExecutionException e) {
             throw new OpencodeException("opencode could not be started (\"" + executable + "\" was not found or"
                     + " cannot be executed). Install opencode or set the path to it in the settings.", true, e);
         }

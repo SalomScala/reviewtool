@@ -1,8 +1,6 @@
 package de.setsoftware.reviewtool.intellij;
 
-import java.io.ByteArrayInputStream;
 import java.io.File;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -223,7 +221,7 @@ public final class ChangeSummaryGenerator {
     }
 
     private static String toText(byte[] contents) {
-        return contents == null ? "" : new String(contents, StandardCharsets.UTF_8);
+        return FileTexts.decode(contents);
     }
 
     private static void collectStop(TreeMap<File, FileAccumulator> byFile, Stop stop) {
@@ -276,7 +274,7 @@ public final class ChangeSummaryGenerator {
             return parts;
         }
         try {
-            final CompilationUnit cu = JavaParser.parse(new ByteArrayInputStream(fs.contents));
+            final CompilationUnit cu = JavaParser.parse(toText(fs.contents));
             for (final TypeDeclaration<?> type : cu.getTypes()) {
                 final List<String> changedMethods = new ArrayList<>();
                 for (final MethodDeclaration method : type.findAll(MethodDeclaration.class)) {

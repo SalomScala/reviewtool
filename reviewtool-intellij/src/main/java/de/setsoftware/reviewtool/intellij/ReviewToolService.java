@@ -12,11 +12,12 @@ import javax.xml.parsers.ParserConfigurationException;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.PathManager;
-import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.ProjectRootManager;
+import com.intellij.openapi.util.Computable;
 import com.intellij.openapi.vfs.VirtualFile;
 
 import de.setsoftware.reviewtool.base.Logger;
@@ -196,8 +197,8 @@ public final class ReviewToolService {
     }
 
     private void registerProjectRoots(IChangeSource source) {
-        final VirtualFile[] roots = ReadAction.compute(
-                () -> ProjectRootManager.getInstance(this.project).getContentRoots());
+        final VirtualFile[] roots = ApplicationManager.getApplication().runReadAction(
+                (Computable<VirtualFile[]>) () -> ProjectRootManager.getInstance(this.project).getContentRoots());
         for (final VirtualFile root : roots) {
             if (!root.isInLocalFileSystem()) {
                 continue;

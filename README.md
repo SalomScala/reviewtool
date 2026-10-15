@@ -19,6 +19,8 @@ The IntelliJ plugin lives in a Gradle build (`settings.gradle.kts` in the reposi
     ./gradlew :reviewtool-intellij:test             # smoke tests of the tool window (headless IntelliJ test framework)
     ./gradlew :reviewtool-intellij:buildPlugin      # build the IntelliJ plugin zip (needs access to *.jetbrains.com)
     ./gradlew :reviewtool-intellij:runIde           # start a sandbox IDE with the plugin for manual testing
+    ./gradlew :reviewtool-intellij:runIdeLatest     # the same with a current IntelliJ IDEA (2026.2)
+    ./gradlew :reviewtool-intellij:verifyPlugin     # check the compatibility with IntelliJ 2024.3 and 2026.2 (Plugin Verifier)
 
 The plugin zip is created in `reviewtool-intellij/build/distributions` and can be installed via "Settings | Plugins | Install Plugin from Disk...".
 

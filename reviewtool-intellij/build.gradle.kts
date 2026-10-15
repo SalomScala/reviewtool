@@ -1,3 +1,4 @@
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 /*
@@ -9,8 +10,11 @@ import org.jetbrains.intellij.platform.gradle.TestFrameworkType
  */
 plugins {
     java
-    id("org.jetbrains.intellij.platform") version "2.6.0"
+    id("org.jetbrains.intellij.platform") version "2.11.0"
 }
+
+/** A current IDE version (as used in practice) for the compatibility check and "./gradlew runIdeLatest". */
+val LATEST_IDE_VERSION = "2026.2.3"
 
 repositories {
     mavenCentral()
@@ -37,6 +41,7 @@ dependencies {
     intellijPlatform {
         intellijIdeaCommunity("2024.3.5")
         testFramework(TestFrameworkType.Platform)
+        pluginVerifier()
     }
 
     testImplementation("junit:junit:4.13.2")
@@ -55,6 +60,14 @@ intellijPlatform {
         ideaVersion {
             sinceBuild = "243"
             untilBuild = provider { null }
+        }
+    }
+    // "./gradlew verifyPlugin" checks the plugin against the oldest supported IDE and a current one
+    // (the IDE versions used in practice are newer than the one the plugin is built against)
+    pluginVerification {
+        ides {
+            create(IntelliJPlatformType.IntellijIdeaCommunity, "2024.3.5")
+            create(IntelliJPlatformType.IntellijIdeaUltimate, LATEST_IDE_VERSION)
         }
     }
 }
@@ -97,4 +110,11 @@ tasks.test {
     systemProperty("user.home", isolatedHome.get().asFile.absolutePath)
     // the smoke test renders the panels into PNG files here (for a visual check)
     systemProperty("cort.snapshotDir", layout.buildDirectory.dir("ui-snapshots").get().asFile.absolutePath)
+}
+
+// "./gradlew runIdeLatest" starts the current IDE with the plugin, e.g. to check that nothing logs errors
+// there ("runIde" uses the IDE the plugin is built against)
+intellijPlatformTesting.runIde.register("runIdeLatest") {
+    type = IntelliJPlatformType.IntellijIdeaUltimate
+    version = LATEST_IDE_VERSION
 }

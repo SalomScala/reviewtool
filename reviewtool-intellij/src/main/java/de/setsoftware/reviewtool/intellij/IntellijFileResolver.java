@@ -6,12 +6,14 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Consumer;
 
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.Computable;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.psi.search.FilenameIndex;
@@ -37,7 +39,7 @@ final class IntellijFileResolver {
         if (shortName == null || shortName.isEmpty()) {
             return null;
         }
-        return ReadAction.compute(() -> {
+        return ApplicationManager.getApplication().runReadAction((Computable<VirtualFile>) () -> {
             final Collection<VirtualFile> candidates =
                     FilenameIndex.getVirtualFilesByName(shortName, GlobalSearchScope.allScope(project));
             return candidates.isEmpty() ? null : candidates.iterator().next();
@@ -71,14 +73,19 @@ final class IntellijFileResolver {
      * Creates a descriptor to open the given file at the start of the given (0-based) line. The
      * descriptor is created from the offset, because the variant with line and column determines the
      * code style (and thereby the PSI) of the file, which is a slow operation on the EDT.
+     * The document is read in a read action: since IntelliJ 2026, UI event handlers (e.g. a double
+     * click in the tours tree) no longer have read access implicitly.
      */
     static OpenFileDescriptor descriptorForLine(Project project, VirtualFile file, int line) {
-        final Document document = FileDocumentManager.getInstance().getDocument(file);
-        if (document == null || document.getLineCount() == 0) {
-            return new OpenFileDescriptor(project, file, 0);
-        }
-        final int boundedLine = Math.max(0, Math.min(line, document.getLineCount() - 1));
-        return new OpenFileDescriptor(project, file, document.getLineStartOffset(boundedLine));
+        final int offset = ApplicationManager.getApplication().runReadAction((Computable<Integer>) () -> {
+            final Document document = FileDocumentManager.getInstance().getDocument(file);
+            if (document == null || document.getLineCount() == 0) {
+                return 0;
+            }
+            final int boundedLine = Math.max(0, Math.min(line, document.getLineCount() - 1));
+            return document.getLineStartOffset(boundedLine);
+        });
+        return new OpenFileDescriptor(project, file, offset);
     }
 
     /**

@@ -6,6 +6,7 @@ import java.io.File;
 
 import javax.swing.Timer;
 
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.editor.LogicalPosition;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
@@ -31,7 +32,9 @@ final class EditorViewTracker {
     EditorViewTracker(Project project, ViewStatistics statistics) {
         this.project = project;
         this.statistics = statistics;
-        this.timer = new Timer(INTERVAL_MS, (e) -> this.tick());
+        // the editor's layout is read in a read action: since IntelliJ 2026, Swing events (like the
+        // timer's) no longer have read access implicitly
+        this.timer = new Timer(INTERVAL_MS, (e) -> ApplicationManager.getApplication().runReadAction(this::tick));
         this.timer.setRepeats(true);
     }
 

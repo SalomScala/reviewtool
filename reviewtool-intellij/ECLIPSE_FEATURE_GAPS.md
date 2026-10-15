@@ -216,6 +216,34 @@ Siebte Runde (KI-Unterstützung, zweite Ausbaustufe; ohne Eclipse-Pendant):
 
 ## Gefundene und behobene Fehler
 
+- **Stabilitätsrunde für Windows und IntelliJ 2026** (nach den Fehlern aus dem Praxiseinsatz):
+  - Kompatibilität: `./gradlew :reviewtool-intellij:verifyPlugin` prüft das Plugin mit dem Plugin Verifier gegen
+    IntelliJ 2024.3 und 2026.2 (beide „Compatible“; die drei Aufrufe der in 2026 veralteten `ReadAction.compute` sind
+    ersetzt), `./gradlew :reviewtool-intellij:runIdeLatest` startet eine aktuelle IDE mit dem Plugin. Dafür wurde das
+    IntelliJ Platform Gradle Plugin auf 2.11.0 aktualisiert (die letzte Version für Gradle 8; mit 2.6.0 startete 2026.2
+    wegen des Coroutines-Debug-Agents gar nicht).
+  - Lesezugriffe aus UI-Handlern systematisch durchgesehen: außer dem Sprung zur Zeile (siehe unten) war nur die
+    Ansichtsverfolgung (Swing-Timer) potentiell betroffen und läuft jetzt in einer Read-Action. In 2026.2.3 durchgespielt
+    (Tours, Changes, Summary, Remarks, KI-Tab, Anmerkung anlegen), ohne CoRT-Fehler im IDE-Log.
+  - **Zeilenenden:** Hat die Arbeitskopie CRLF und Git LF (`core.autocrlf` unter Windows), zeigte die Diff-Ansicht
+    „Only the stop's changes“ nach lokalen Änderungen die ganze Datei als geändert, weil der Zeilenvergleich `\r`
+    mitverglich. Die Texte werden jetzt normalisiert (Test `testWorkingCopyWithCrlfOnlyShowsTheRealChanges`; in der
+    IDE mit einer CRLF-Arbeitskopie geprüft: eine Änderung, korrekte Stopp-Zeilen).
+  - **Kodierung:** Diff-Ansicht, Zusammenfassung und KI lasen die Dateien immer als UTF-8 – Umlaute in älteren
+    windows-1252-Quellen erschienen als „�“. Jetzt wie im Core: UTF-8, wenn alle Versionen gültiges UTF-8 sind, sonst
+    windows-1252 (ein Zeichen pro Byte wie das ISO-8859-1 des Cores, damit die Positionen passen); ein UTF-8-BOM wird
+    entfernt (`FileTextsTest`).
+  - **opencode unter Windows:** npm installiert opencode als `opencode.cmd`, das Java beim Prozessstart nicht findet.
+    CoRT sucht einen Befehl ohne Pfad und Endung jetzt über PATH/PATHEXT und startet ihn über IntelliJs
+    `GeneralCommandLine` (die Batch-Dateien korrekt über `cmd.exe` aufruft). Unter Linux in der IDE geprüft; unter
+    Windows konnte ich es hier nicht ausführen.
+- **„Read access is allowed from inside read-action only“ beim Doppelklick auf einen Stop** (im Praxiseinsatz mit
+  einer aktuellen IDE gefunden): Seit IntelliJ 2026 haben Maus-Handler im UI-Thread nicht mehr automatisch Lesezugriff.
+  Der Sprung zur Zeile las das Dokument ohne Read-Action – betroffen waren der Doppelklick im Tour-Baum, in der
+  Zusammenfassung und die Stop-Links im KI-Tab. Jetzt geschieht das in einer Read-Action. Mit IntelliJ IDEA 2026.2.3
+  nachgestellt und nach dem Fix ohne Fehler durchgespielt (Tour-Baum, Changes, Summary, Remarks, Anmerkung anlegen);
+  der Test `testNavigationDescriptorUsesTheLineStart` ruft die Methode zusätzlich aus einem Hintergrund-Thread auf, wo
+  auch die 2024.3-Testplattform den fehlenden Lesezugriff meldet.
 - **Falsch kodierte Zeichen im Diff** (im Praxiseinsatz unter Windows gefunden): Statt der Trennmarke „⋯“ zwischen
   den Teilen eines Stops zeigte die Diff-Anzeige „â‹¯“. Das IntelliJ-Modul gab beim Kompilieren keine Quellcodierung
   an, sodass javac die UTF-8-Quellen mit der Plattformcodierung (windows-1252) las. Betroffen waren auch „temporärer
