@@ -92,10 +92,22 @@ public final class IntellijMarkerFactory {
      */
     public void addRemarkMarker(
             VirtualFile file, int line, boolean warning, String tooltip, ActionGroup popupActions) {
+        this.addRemarkMarker(file, line, warning, tooltip, popupActions, null);
+    }
+
+    /**
+     * Like {@link #addRemarkMarker(VirtualFile, int, boolean, String, ActionGroup)}, with a text that is
+     * shown at the end of the line (see {@link RemarkLinePainter}; null for none).
+     */
+    void addRemarkMarker(VirtualFile file, int line, boolean warning, String tooltip, ActionGroup popupActions,
+            RemarkLinePainter.RemarkText lineText) {
         runOnEdt(() -> ApplicationManager.getApplication().runReadAction(() -> {
             final MarkerHandle handle = this.showGutterMarker(
                     file, line, reviewIcon(warning), tooltip, popupActions);
             if (handle != null) {
+                if (lineText != null) {
+                    handle.highlighter.putUserData(RemarkLinePainter.REMARK_TEXT, lineText);
+                }
                 this.remarkHandles.add(handle);
             }
         }));

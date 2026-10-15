@@ -52,6 +52,7 @@ public class ReviewToolConfigurable implements Configurable {
     private JBTextField maxDiffThresholdField;
     private StopOrderingTable stopOrderingTable;
     private JBCheckBox aiEnabledBox;
+    private JBCheckBox showRemarksInEditorBox;
     private JBTextField opencodePathField;
     /** The token as loaded from the settings (null while it is loaded in the background). */
     private String loadedToken;
@@ -91,6 +92,7 @@ public class ReviewToolConfigurable implements Configurable {
         this.logMessagePatternField = new JBTextField();
         this.maxDiffThresholdField = new JBTextField();
         this.stopOrderingTable = new StopOrderingTable();
+        this.showRemarksInEditorBox = new JBCheckBox("Show the text of the review remarks at the end of their lines in the editor");
         this.aiEnabledBox = new JBCheckBox("Enable AI support via opencode (summary of the changes, explanations of stops)");
         this.opencodePathField = new JBTextField();
         this.opencodePathField.getEmptyText().setText("opencode (from the PATH)");
@@ -132,6 +134,7 @@ public class ReviewToolConfigurable implements Configurable {
                 .addComponentToRightColumn(hint("Regular expression for the commits of a ticket; ${key} is the"
                         + " ticket key"))
                 .addLabeledComponent("Max file size for textual diff (bytes):", this.maxDiffThresholdField)
+                .addComponent(this.showRemarksInEditorBox)
                 .addComponent(new TitledSeparator("AI Support (opencode)"))
                 .addComponent(this.aiEnabledBox)
                 .addComponent(hint("<html>CoRT starts your local opencode in the project directory and sends the diffs"
@@ -241,6 +244,7 @@ public class ReviewToolConfigurable implements Configurable {
                 || !this.maxDiffThresholdField.getText().equals(Long.toString(s.maxTextDiffFileSizeThreshold))
                 || !this.stopOrderingTable.getSettings().equals(StopOrderingSettings.normalize(s.stopOrdering))
                 || this.aiEnabledBox.isSelected() != s.aiEnabled
+                || this.showRemarksInEditorBox.isSelected() != s.showRemarksInEditor
                 || !this.opencodePathField.getText().trim().equals(s.opencodePath);
     }
 
@@ -277,6 +281,7 @@ public class ReviewToolConfigurable implements Configurable {
         s.maxTextDiffFileSizeThreshold = threshold;
         s.stopOrdering = this.stopOrderingTable.getSettings();
         s.aiEnabled = this.aiEnabledBox.isSelected();
+        s.showRemarksInEditor = this.showRemarksInEditorBox.isSelected();
         s.opencodePath = this.opencodePathField.getText().trim();
     }
 
@@ -300,6 +305,7 @@ public class ReviewToolConfigurable implements Configurable {
         this.maxDiffThresholdField.setText(Long.toString(s.maxTextDiffFileSizeThreshold));
         this.stopOrderingTable.setSettings(s.stopOrdering);
         this.aiEnabledBox.setSelected(s.aiEnabled);
+        this.showRemarksInEditorBox.setSelected(s.showRemarksInEditor);
         this.opencodePathField.setText(s.opencodePath);
     }
 

@@ -330,6 +330,37 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
                 FileTexts.decode(committed, charset), FileTexts.decode(workingCopy, charset))));
     }
 
+    public void testRemarkTextsAtTheEndOfTheLines() {
+        final com.intellij.psi.PsiFile psiFile =
+                this.myFixture.addFileToProject("Remarks.java", "class Remarks {\n    int a;\n    int b;\n}\n");
+        final com.intellij.openapi.vfs.VirtualFile vf = psiFile.getVirtualFile();
+        final com.intellij.openapi.editor.Document document =
+                com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().getDocument(vf);
+        final IntellijMarkerFactory factory = new IntellijMarkerFactory(this.getProject());
+        factory.addRemarkMarker(vf, 2, true, "tooltip", null,
+                new RemarkLinePainter.RemarkText("must fix: a is never used", true));
+        final RemarkLinePainter painter = new RemarkLinePainter();
+        assertNull(painter.getLineExtensions(this.getProject(), vf, 0));
+        java.util.Collection<com.intellij.openapi.editor.LineExtensionInfo> texts =
+                painter.getLineExtensions(this.getProject(), vf, 1);
+        assertEquals(1, texts.size());
+        assertTrue(texts.iterator().next().getText(), texts.iterator().next().getText().contains("must fix: a is never used"));
+        // the text moves with its line
+        com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(this.getProject(),
+                () -> document.insertString(0, "// new first line\n"));
+        assertNull(painter.getLineExtensions(this.getProject(), vf, 1));
+        assertEquals(1, painter.getLineExtensions(this.getProject(), vf, 2).size());
+        // it can be switched off
+        ReviewToolSettings.getInstance(this.getProject()).getState().showRemarksInEditor = false;
+        try {
+            assertNull(painter.getLineExtensions(this.getProject(), vf, 2));
+        } finally {
+            ReviewToolSettings.getInstance(this.getProject()).getState().showRemarksInEditor = true;
+        }
+        factory.clearReviewMarkers();
+        assertNull(painter.getLineExtensions(this.getProject(), vf, 2));
+    }
+
     public void testNavigationDescriptorUsesTheLineStart() throws Exception {
         final com.intellij.psi.PsiFile file =
                 this.myFixture.addFileToProject("Lines.java", "class Lines {\n    int a;\n    int b;\n}\n");

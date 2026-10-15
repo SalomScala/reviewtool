@@ -19,8 +19,11 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.EnumSet;
+import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -75,6 +78,7 @@ import com.intellij.util.ui.JBUI;
 import com.intellij.util.ui.tree.TreeUtil;
 
 import de.setsoftware.reviewtool.base.Logger;
+import de.setsoftware.reviewtool.base.Pair;
 import de.setsoftware.reviewtool.changesources.git.GitCommitInfo;
 import de.setsoftware.reviewtool.model.EndTransition;
 import de.setsoftware.reviewtool.model.ITicketData;
@@ -82,6 +86,8 @@ import de.setsoftware.reviewtool.model.TicketInfo;
 import de.setsoftware.reviewtool.model.api.IChange;
 import de.setsoftware.reviewtool.model.api.FileChangeType;
 import de.setsoftware.reviewtool.model.api.IChangeData;
+import de.setsoftware.reviewtool.model.api.IFragment;
+import de.setsoftware.reviewtool.model.api.IHunk;
 import de.setsoftware.reviewtool.model.api.ICommit;
 import de.setsoftware.reviewtool.model.api.IRevisionedFile;
 import de.setsoftware.reviewtool.model.api.PositionReference;
@@ -96,6 +102,7 @@ import de.setsoftware.reviewtool.model.remarks.Position;
 import de.setsoftware.reviewtool.model.remarks.RemarkType;
 import de.setsoftware.reviewtool.model.remarks.ReviewData;
 import de.setsoftware.reviewtool.model.remarks.ReviewRemark;
+import de.setsoftware.reviewtool.model.remarks.ReviewRound;
 import de.setsoftware.reviewtool.ticketconnectors.youtrack.YouTrackConnector;
 
 /**
@@ -233,6 +240,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         this.toursPanel.setExplainListener(this::aiExplain);
         this.aiPanel.setRemarkAcceptor(this::addRemarkFromAi);
         this.aiPanel.setRiskListener(this.toursPanel::setAiRisks);
+        this.aiPanel.setRemarks(this::remarksOfEarlierRounds, (remark) -> this.remarksPanel.jumpToRemark(remark));
         this.toursPanel.setProgressListener(this::progressChanged);
         this.progressSaveTimer = new Timer(3000, (e) -> this.saveProgress(false));
         this.progressSaveTimer.setRepeats(false);
@@ -530,6 +538,10 @@ public class ReviewToolPanel extends JPanel implements Disposable {
      */
     void settingsChanged() {
         this.aiPanel.settingsChanged();
+        if (this.remarkMarkersShown) {
+            // e.g. the remark texts at the end of the lines have been switched on or off
+            this.renderRemarkMarkers();
+        }
         this.updateTicketTableEmptyText();
         if (!ReviewToolSettings.getInstance(this.project).getState().youtrackUrl.isEmpty()) {
             this.refreshTickets();
@@ -1598,6 +1610,10 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                         ReviewToolPanel.this.summaryPanel.setTours(tours);
                         ReviewToolPanel.this.rightTabs.setSelectedIndex(TAB_TOURS);
                         ReviewToolPanel.this.toursCreated(key, tours, saved);
+                        if (ReviewToolPanel.this.remarkMarkersShown) {
+                            // the remarks whose code has been changed in the tours are marked
+                            ReviewToolPanel.this.renderRemarkMarkers();
+                        }
                         if (choices.getChosenCommits() != null) {
                             IntellijNotifications.info(ReviewToolPanel.this.project, "Only "
                                     + choices.getChosenCommits().size() + " of the " + choices.getAllCommitCount()
@@ -1890,6 +1906,83 @@ public class ReviewToolPanel extends JPanel implements Disposable {
      * Renders a gutter marker (with a resolution popup) for every remark that refers to a file.
      * Remarks for a whole file are shown at its first line.
      */
+    /**
+     * The remarks of the earlier review rounds that ask for a change (with their round numbers), e.g.
+     * for the AI's check whether the changes of this round fix them.
+     */
+    private List<Pair<ReviewRemark, Integer>> remarksOfEarlierRounds() {
+        final List<Pair<ReviewRemark, Integer>> ret = new ArrayList<>();
+        if (!this.remarksLoaded) {
+            return ret;
+        }
+        for (final ReviewRound round : this.remarksModel.getReviewData().getReviewRounds()) {
+            if (round.getNumber() >= this.currentRound) {
+                continue;
+            }
+            for (final ReviewRemark remark : round.getRemarks()) {
+                switch (remark.getRemarkType()) {
+                case MUST_FIX:
+                case CAN_FIX:
+                case OTHER:
+                    ret.add(Pair.create(remark, round.getNumber()));
+                    break;
+                default:
+                    break;
+                }
+            }
+        }
+        return ret;
+    }
+
+    /**
+     * The review round of each remark.
+     */
+    private Map<ReviewRemark, Integer> roundsOfRemarks() {
+        final Map<ReviewRemark, Integer> ret = new IdentityHashMap<>();
+        for (final ReviewRound round : this.remarksModel.getReviewData().getReviewRounds()) {
+            for (final ReviewRemark remark : round.getRemarks()) {
+                ret.put(remark, round.getNumber());
+            }
+        }
+        return ret;
+    }
+
+    /**
+     * Returns true iff a stop of the current tours changes the given (1-based) line of the file or
+     * a line next to it (e.g. the remark's code has been changed by the commits of this review round).
+     * As the line of a remark of an earlier round refers to the file as it was back then, it is compared
+     * with the stops' lines in the oldest version (the version before the reviewed commits), and also
+     * with their current lines.
+     */
+    private boolean isChangedInTours(VirtualFile file, int line) {
+        final ToursInReview tours = this.toursPanel.getTours();
+        if (tours == null || line <= 0) {
+            return false;
+        }
+        for (final Stop stop : tours.getStopsFor(new File(file.getPath()).getAbsoluteFile())) {
+            if (!stop.isDetailedFragmentKnown()) {
+                return true;
+            }
+            if (isNear(line, stop.getMostRecentFragment())) {
+                return true;
+            }
+            final Iterator<IRevisionedFile> revisions = stop.getHistory().keySet().iterator();
+            final IRevisionedFile oldest = revisions.hasNext() ? revisions.next() : null;
+            for (final IRevisionedFile revision : stop.getHistory().keySet()) {
+                for (final IHunk hunk : stop.getContentFor(revision)) {
+                    if (hunk.getSource().getFile().equals(oldest) && isNear(line, hunk.getSource())) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean isNear(int line, IFragment fragment) {
+        return line >= fragment.getFrom().getLine() - 1 && line <= fragment.getTo().getLine() + 1;
+    }
+
     private void renderRemarkMarkers() {
         IntellijMarkerFactory.runOnEdt(() -> {
             final int generation = this.remarkMarkerGeneration.incrementAndGet();
@@ -1908,6 +2001,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                     return;
                 }
                 this.markerFactory.clearReviewMarkers();
+                final Map<ReviewRemark, Integer> rounds = this.roundsOfRemarks();
                 for (final ReviewRemark remark : remarks) {
                     final Position pos = Position.parse(remark.getPositionString());
                     final VirtualFile file = files.get(pos.getShortFileName());
@@ -1915,11 +2009,18 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                         continue;
                     }
                     final boolean warning = remark.needsFixing();
+                    final String resolution = remark.getResolution().name().toLowerCase().replace('_', ' ');
                     final String tooltip = "[" + ReviewRemarksPanel.typeLabel(remark) + " / "
-                            + remark.getResolution().name().toLowerCase().replace('_', ' ') + "] "
-                            + remark.getText() + "\n(click for actions)";
+                            + resolution + "] " + remark.getText() + "\n(click for actions)";
+                    final Integer round = rounds.get(remark);
+                    final boolean changed = round != null && round < this.currentRound
+                            && this.isChangedInTours(file, pos.getLine());
+                    final String lineText = ReviewRemarksPanel.typeLabel(remark)
+                            + (warning ? "" : " (" + resolution + ")") + ": " + RemarkLinePainter.abbreviate(remark.getText())
+                            + (changed ? "  \u00B7 code changed since review " + round : "");
                     this.markerFactory.addRemarkMarker(file, Math.max(1, pos.getLine()), warning, tooltip,
-                            RemarkActions.create(this.project, this.remarksModel, () -> remark, null));
+                            RemarkActions.create(this.project, this.remarksModel, () -> remark, null),
+                            new RemarkLinePainter.RemarkText(lineText, warning));
                 }
             });
         });
