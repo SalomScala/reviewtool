@@ -829,7 +829,8 @@ final class ReviewAiPanel extends JPanel {
         if (risks.isEmpty()) {
             html.append("<p>The model did not rate any stop.</p>");
         } else {
-            html.append("<p>The ratings are also shown in the \"Tours\" tab (high and medium risk).</p><ul>");
+            html.append("<p>The ratings are also shown in the \"Tours\" tab (high and medium risk). They are unchecked"
+                    + " hints of the model: a \"low\" rating does not mean that a stop can be skipped.</p><ul>");
             for (final StopRisk risk : risks) {
                 final StopForAi stop = stops.get(numbers.get(risk.getStop()));
                 html.append("<li>").append(riskLabel(risk.getRisk())).append(' ')

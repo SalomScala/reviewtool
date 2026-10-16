@@ -75,8 +75,8 @@ final class StopDiffExcerpt {
                 continue;
             }
             final int before = Math.min(contextLines, Math.min(c.oldStart, c.newStart));
-            final int after = Math.min(contextLines,
-                    Math.min(oldLines.length - c.oldEnd, newLines.length - c.newEnd));
+            final int after = Math.max(0, Math.min(contextLines,
+                    Math.min(oldLines.length - c.oldEnd, newLines.length - c.newEnd)));
             final int[] block = {c.oldStart - before, c.oldEnd + after, c.newStart - before, c.newEnd + after};
             final int[] last = blocks.isEmpty() ? null : blocks.get(blocks.size() - 1);
             if (last != null && (block[0] <= last[1] || block[2] <= last[3])) {
@@ -138,8 +138,8 @@ final class StopDiffExcerpt {
             final Change first = relevant.get(i);
             final Change last = relevant.get(j);
             final int before = Math.min(contextLines, Math.min(first.oldStart, first.newStart));
-            final int after = Math.min(contextLines,
-                    Math.min(oldLines.length - last.oldEnd, newLines.length - last.newEnd));
+            final int after = Math.max(0, Math.min(contextLines,
+                    Math.min(oldLines.length - last.oldEnd, newLines.length - last.newEnd)));
             final int oldFrom = first.oldStart - before;
             final int oldTo = last.oldEnd + after;
             final int newFrom = first.newStart - before;
@@ -150,18 +150,18 @@ final class StopDiffExcerpt {
             for (int k = i; k <= j; k++) {
                 final Change c = relevant.get(k);
                 for (; line < c.oldStart; line++) {
-                    sb.append(' ').append(oldLines[line]).append('\n');
+                    sb.append(' ').append(line(oldLines, line)).append('\n');
                 }
                 for (int x = c.oldStart; x < c.oldEnd; x++) {
-                    sb.append('-').append(oldLines[x]).append('\n');
+                    sb.append('-').append(line(oldLines, x)).append('\n');
                 }
                 for (int x = c.newStart; x < c.newEnd; x++) {
-                    sb.append('+').append(newLines[x]).append('\n');
+                    sb.append('+').append(line(newLines, x)).append('\n');
                 }
                 line = c.oldEnd;
             }
             for (; line < oldTo; line++) {
-                sb.append(' ').append(oldLines[line]).append('\n');
+                sb.append(' ').append(line(oldLines, line)).append('\n');
             }
             i = j + 1;
         }
@@ -181,6 +181,14 @@ final class StopDiffExcerpt {
         return withoutTrailingNewline.split("\n", -1);
     }
 
+    /**
+     * Returns the line with the given index. The line comparison of IntelliJ sees an empty line after a
+     * final line break (and in an empty text), which {@link #splitLines} leaves out: such lines are empty.
+     */
+    private static String line(String[] lines, int index) {
+        return index < lines.length ? lines[index] : "";
+    }
+
     private static void appendSeparator(StringBuilder text, List<Integer> map) {
         text.append(SEPARATOR).append('\n');
         map.add(-1);
@@ -188,7 +196,7 @@ final class StopDiffExcerpt {
 
     private static void appendLines(StringBuilder text, List<Integer> map, String[] lines, int start, int end) {
         for (int i = start; i < end; i++) {
-            text.append(lines[i]).append('\n');
+            text.append(line(lines, i)).append('\n');
             map.add(i);
         }
     }

@@ -77,6 +77,18 @@ public class StopDiffExcerptTest {
     }
 
     @Test
+    public void testAddedFileStartingWithAnEmptyLine() {
+        // IntelliJ's line comparison sees one (empty) line in an empty text and matches it with the
+        // first (empty) line of the new text: the rest is inserted after it
+        final List<StopDiffExcerpt.Change> changes = Arrays.asList(new StopDiffExcerpt.Change(1, 1, 1, 3));
+        assertEquals("@@ -1,1 +1,3 @@\n \n+package demo;\n+class Main {}\n",
+                StopDiffExcerpt.unifiedDiff("", "\npackage demo;\nclass Main {}", changes, -1, 0, 3));
+        final StopDiffExcerpt excerpt = StopDiffExcerpt.create("", "\npackage demo;\nclass Main {}", changes, 1, 3, 3);
+        assertEquals("", excerpt.getOldText());
+        assertEquals("\npackage demo;\nclass Main {}", excerpt.getNewText());
+    }
+
+    @Test
     public void testNoExcerptWithoutChangesOfTheStop() {
         assertNull(StopDiffExcerpt.create(OLD, NEW, CHANGES, 4, 6, 2));
     }

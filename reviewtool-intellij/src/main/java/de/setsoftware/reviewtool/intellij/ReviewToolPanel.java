@@ -1342,11 +1342,8 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         } else {
             preferredType = EndTransition.Type.OK;
         }
-        final int notVisited = this.toursPanel.countRelevantStopsNotFullyVisited();
         final String summary = open + " remark(s) need fixing" + (temporary ? ", there are temporary markers" : "");
-        final String warning = notVisited <= 0 ? null
-                : notVisited + (notVisited == 1 ? " relevant stop has" : " relevant stops have")
-                        + " not been viewed completely (or marked as checked) yet.";
+        final String warning = ReviewCoverage.warning(this.toursPanel.coverageOfRelevantStops());
         final String remarksBefore = this.remarksArea.getText();
 
         new Task.Backgroundable(this.project, "Ending review of " + key, true) {
@@ -1654,6 +1651,11 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         } else if (saved == null) {
             // new tours: the saved AI answers belong to the old ones
             this.deleteAiAnswers(key);
+            final String sizeHint = ReviewCoverage.sizeHint(key, this.toursPanel.countChangedLinesOfRelevantStops(),
+                    this.toursPanel.coverageOfRelevantStops().size());
+            if (sizeHint != null) {
+                IntellijNotifications.info(this.project, sizeHint);
+            }
         }
         this.statisticsKey = key;
         this.saveProgress(false);

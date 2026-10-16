@@ -296,6 +296,23 @@ Zwölfte Runde (KI als Zweitmeinung nach dem eigenen Review; Grundlage: Literatu
   nachdem eine andere Tour aktiviert wurde), sodass „Stop 3“-Links in den wiederhergestellten Antworten auf falsche
   Stops zeigen konnten. Die gespeicherte Nummerierung bleibt jetzt erhalten.
 
+Dreizehnte Runde (Abdeckung, Größe und Risikohinweise; Grundlage: Literaturrecherche):
+
+- **Konkrete Warnung bei „End Review...“:** Statt nur der Anzahl nennt der Dialog die relevanten Stops, die nicht oder
+  nur teilweise angesehen wurden, und die nur kurz gezeigten (keine Zeile 5 Sekunden lang; die Ansichtsstatistik zählt
+  Sekunden), und wie viele davon im letzten Drittel des Reviews liegen. Hintergrund: Fehler in der zuletzt gezeigten
+  Datei wurden mit 64 % geringerer Wahrscheinlichkeit gefunden (Fregnan et al., FSE 2022); geringe Review-Abdeckung
+  geht mit mehr Fehlern nach dem Release einher (McIntosh et al., MSR 2014).
+- **Größe:** Die Statuszeile der Tours zeigt die Zahl der geänderten Zeilen der relevanten Stops; ab 400 Zeilen weist
+  CoRT beim Erstellen der Tours darauf hin, dass das Review groß ist (bei kleinen Änderungen wurden 59 %, bei großen
+  35 % der Fehler gefunden; Baum et al., EMSE 2019), und schlägt mehrere Sitzungen oder eine Aufteilung vor.
+- **Risikohinweise der KI** heißen jetzt „AI hint (unchecked)“; der „AI“-Tab sagt ausdrücklich, dass „low“ nicht
+  bedeutet, dass ein Stop übersprungen werden kann (es gibt keinen Beleg, dass angezeigte Risikostufen helfen).
+- Beim Test gefunden und behoben: Die KI-Anfragen scheiterten mit einer `ArrayIndexOutOfBoundsException`, wenn eine
+  neu angelegte Datei (inzwischen) mit einer Leerzeile beginnt: IntelliJs Zeilenvergleich sieht in einem leeren Text
+  eine leere Zeile, die CoRTs Zerlegung in Zeilen nicht kennt. Solche Zeilen gelten jetzt als leer (auch in den
+  Diff-Ausschnitten der Stops).
+
 ## Gefundene und behobene Fehler
 
 - **„Continue review“ fehlte nach einem Absturz** (beim Test der achten Runde gefunden): Das nicht beendete Ticket
