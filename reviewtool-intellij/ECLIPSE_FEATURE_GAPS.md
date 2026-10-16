@@ -259,6 +259,21 @@ Zehnte Runde (Modellauswahl für die KI-Funktionen; ohne Eclipse-Pendant):
   „(not available in opencode)“ markiert, sobald die Modelle geladen sind.
 - Weiterhin speichert CoRT keine API-Keys; Anbieter und Zugangsdaten bleiben Sache der opencode-Konfiguration.
 
+Elfte Runde (KI-Antworten über einen Neustart behalten, Vorschläge für einen Stop; ohne Eclipse-Pendant):
+
+- **KI-Antworten bleiben erhalten:** Die Antworten zu den aktuellen Tours (Zusammenfassung, Erklärungen, Vorschläge
+  mit ihrem Status „accepted“/„rejected“, Risikohinweise, Prüfung der Anmerkungen) werden neben dem Review-Fortschritt
+  gespeichert (`<Ticket>.ai.json` im CoRT-Verzeichnis der IDE) und bei „Continue review“ wieder angezeigt; die
+  Benachrichtigung nennt die Zahl der Antworten. Gespeichert wird die Rohantwort des Modells, angezeigt wird sie mit
+  denselben Methoden wie beim ersten Mal; die Risikohinweise erscheinen wieder im Tour-Baum, „Stop 3“-Links und
+  „Accept...“ funktionieren wieder.
+- Die Antworten gehören zu den Stops, auf die sie sich beziehen: Sie werden nur wiederhergestellt, wenn die neu
+  erstellten Tours dieselben Stops (Datei und Zeilen, gleiche Reihenfolge) haben, sonst verworfen. „Create Tours“
+  verwirft sie ebenfalls, das Beenden des Reviews und eine neue Runde löschen sie mit dem Fortschritt. Weitere
+  Anfragen nach dem Neustart laufen in einer neuen opencode-Sitzung (die Änderungen werden einmal neu gesendet).
+- **„Suggest Remarks with AI“** im Kontextmenü eines Stops: Vorschläge nur für diesen Stop (mit seinem Diff in der
+  Anfrage, höchstens 5); Vorschläge des Modells zu anderen Stops werden verworfen und gezählt angezeigt.
+
 ## Gefundene und behobene Fehler
 
 - **„Continue review“ fehlte nach einem Absturz** (beim Test der achten Runde gefunden): Das nicht beendete Ticket

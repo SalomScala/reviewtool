@@ -238,9 +238,11 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         this.toursPanel.setAllStopsVisitedListener(this::allStopsVisited);
         this.toursPanel.setAddRemarkListener(this::addRemarkForStop);
         this.toursPanel.setExplainListener(this::aiExplain);
+        this.toursPanel.setSuggestRemarksListener(this::aiSuggestRemarks);
         this.aiPanel.setRemarkAcceptor(this::addRemarkFromAi);
         this.aiPanel.setRiskListener(this.toursPanel::setAiRisks);
         this.aiPanel.setRemarks(this::remarksOfEarlierRounds, (remark) -> this.remarksPanel.jumpToRemark(remark));
+        this.aiPanel.setHistoryListener(this::saveAiAnswers);
         this.toursPanel.setProgressListener(this::progressChanged);
         this.progressSaveTimer = new Timer(3000, (e) -> this.saveProgress(false));
         this.progressSaveTimer.setRepeats(false);
@@ -1641,14 +1643,78 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         }
         if (saved != null && !key.equals(this.statisticsKey)) {
             final int checked = saved.applyTo(this.toursPanel.getStatistics(), tours);
-            if (checked > 0 || saved.hasViews()) {
+            final int answers = this.restoreAiAnswers(key, tours);
+            if (checked > 0 || saved.hasViews() || answers > 0) {
                 IntellijNotifications.info(this.project, "The progress of the review of " + key
                         + " has been restored (viewed lines" + (checked > 0 ? ", " + checked + " checked stop(s)" : "")
+                        + (answers > 0 ? ", " + answers + (answers == 1 ? " AI answer" : " AI answers") : "")
                         + ").");
             }
+        } else if (saved == null) {
+            // new tours: the saved AI answers belong to the old ones
+            this.deleteAiAnswers(key);
         }
         this.statisticsKey = key;
         this.saveProgress(false);
+    }
+
+    /**
+     * The file the answers of the AI about the tours of the review of the given ticket are saved in
+     * (next to the progress).
+     */
+    private Path aiAnswersFile(String key) {
+        return this.progressDir().resolve(key.replaceAll("[^A-Za-z0-9_.-]", "_") + ".ai.json");
+    }
+
+    /**
+     * Saves the answers of the AI about the tours of the running review (if there is one), so that they
+     * are shown again when the review is continued after a restart of the IDE.
+     */
+    private void saveAiAnswers() {
+        if (!this.isProgressToBeSaved()) {
+            return;
+        }
+        final String history = this.aiPanel.exportHistory();
+        final Path file = this.aiAnswersFile(this.workingOnKey);
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            try {
+                if (history == null) {
+                    Files.deleteIfExists(file);
+                } else {
+                    Files.createDirectories(file.getParent());
+                    final Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+                    Files.write(tmp, history.getBytes(StandardCharsets.UTF_8));
+                    Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+            } catch (final IOException e) {
+                Logger.warn("could not save the AI answers to " + file, e);
+            }
+        });
+    }
+
+    /**
+     * Shows the saved answers of the AI about the tours again. Returns the number of answers shown.
+     */
+    private int restoreAiAnswers(String key, ToursInReview tours) {
+        final Path file = this.aiAnswersFile(key);
+        if (!Files.isRegularFile(file)) {
+            return 0;
+        }
+        try {
+            return this.aiPanel.restoreHistory(new String(Files.readAllBytes(file), StandardCharsets.UTF_8), tours);
+        } catch (final IOException e) {
+            Logger.warn("could not read the saved AI answers " + file, e);
+            return 0;
+        }
+    }
+
+    private void deleteAiAnswers(String key) {
+        final Path file = this.aiAnswersFile(key);
+        try {
+            Files.deleteIfExists(file);
+        } catch (final IOException e) {
+            Logger.warn("could not delete the saved AI answers " + file, e);
+        }
     }
 
     /**
@@ -1763,6 +1829,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         } catch (final IOException e) {
             Logger.warn("could not delete the saved review progress " + file, e);
         }
+        this.deleteAiAnswers(key);
     }
 
     /**
@@ -2072,6 +2139,14 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     void aiExplain(Stop stop) {
         this.rightTabs.setSelectedIndex(TAB_AI);
         this.aiPanel.explain(stop);
+    }
+
+    /**
+     * Shows the "AI" tab and asks the AI for remark suggestions for the given stop.
+     */
+    void aiSuggestRemarks(Stop stop) {
+        this.rightTabs.setSelectedIndex(TAB_AI);
+        this.aiPanel.suggestRemarks(stop);
     }
 
     /**

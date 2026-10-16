@@ -136,6 +136,7 @@ public final class ReviewToursPanel extends JPanel {
     private Runnable allStopsVisitedListener;
     private Consumer<Stop> addRemarkListener;
     private Consumer<Stop> explainListener;
+    private Consumer<Stop> suggestRemarksListener;
     private Runnable progressListener;
     /** The risks of the stops as rated by the AI, for the tours {@link #aiRiskTours}. */
     private Map<Stop, ReviewAiPrompts.StopRisk> aiRisks = Collections.emptyMap();
@@ -275,6 +276,9 @@ public final class ReviewToursPanel extends JPanel {
         menu.add(PanelActions.action("Explain with AI", AllIcons.Actions.IntentionBulb,
                 () -> this.getSelectedStop() != null && this.explainListener != null,
                 () -> this.explainListener.accept(this.getSelectedStop())));
+        menu.add(PanelActions.action("Suggest Remarks with AI", AllIcons.General.Balloon,
+                () -> this.getSelectedStop() != null && this.suggestRemarksListener != null,
+                () -> this.suggestRemarksListener.accept(this.getSelectedStop())));
         menu.add(PanelActions.action("Open Containing Folder", AllIcons.Actions.MenuOpen, () -> this.getSelectedStop() != null,
                 () -> this.openContainingFolder(this.getSelectedStop())));
         menu.add(PanelActions.action(
@@ -512,6 +516,13 @@ public final class ReviewToursPanel extends JPanel {
      */
     ReviewAiPrompts.StopRisk getAiRisk(Stop stop) {
         return this.aiRiskTours != null && this.aiRiskTours == this.tours ? this.aiRisks.get(stop) : null;
+    }
+
+    /**
+     * Sets the action that asks the AI for remark suggestions for a stop (used by the context menu).
+     */
+    void setSuggestRemarksListener(Consumer<Stop> listener) {
+        this.suggestRemarksListener = listener;
     }
 
     /**

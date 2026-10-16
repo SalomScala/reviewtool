@@ -52,6 +52,13 @@ final class ReviewAiPrompts {
             return this.path;
         }
 
+        /**
+         * The lines of the stop in the current file (e.g. "24-28"), or null if unknown.
+         */
+        String getLines() {
+            return this.lines;
+        }
+
         String describe() {
             return "Stop " + this.number + ": " + this.path + (this.lines == null ? "" : ", lines " + this.lines);
         }
@@ -185,6 +192,26 @@ final class ReviewAiPrompts {
 
         int getNumber() {
             return this.number;
+        }
+
+        int getRound() {
+            return this.round;
+        }
+
+        String getKind() {
+            return this.kind;
+        }
+
+        String getState() {
+            return this.state;
+        }
+
+        String getLocation() {
+            return this.location;
+        }
+
+        String getText() {
+            return this.text;
         }
 
         /**
@@ -345,6 +372,25 @@ final class ReviewAiPrompts {
                 + " \"positive\": positive feedback, \"other\": e.g. a question), the text of the remark as the"
                 + " reviewer would write it to the author (one or two sentences) and a short reason for the"
                 + " reviewer.";
+    }
+
+    /**
+     * The request for remark suggestions for one stop (to be answered in the format of
+     * {@link #remarksSchema()}). The stop's diff is repeated, like in {@link #explainRequest}.
+     */
+    static String remarksRequest(StopForAi stop) {
+        return "Suggest review remarks for " + stop.describe() + " only: real problems the reviewer should report"
+                + " (bugs, missing error handling, security or concurrency issues, misleading names, missing tests)"
+                + " and, if deserved, positive feedback. Take the rest of the changes into account and read the"
+                + " files if you need more context, but only suggest remarks on this stop. Only suggest remarks you"
+                + " are confident about; no remarks on formatting or on code that has not been changed. Suggest at"
+                + " most 5 remarks; it is fine to suggest none.\n"
+                + "For each remark give the number of the stop (" + stop.getNumber() + "), the line in the current"
+                + " version of the file (0 for the stop as a whole), the kind (\"must\": must be fixed, \"can\":"
+                + " could be improved, \"positive\": positive feedback, \"other\": e.g. a question), the text of"
+                + " the remark as the reviewer would write it to the author (one or two sentences) and a short"
+                + " reason for the reviewer.\n\n"
+                + (stop.diff == null ? "(no textual diff)\n" : diffBlock(stop));
     }
 
     static JsonObject remarksSchema() {
