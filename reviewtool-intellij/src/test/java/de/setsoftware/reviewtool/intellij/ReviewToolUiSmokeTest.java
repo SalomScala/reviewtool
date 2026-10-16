@@ -295,7 +295,7 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
             String shown = ai.getShownText();
             assertTrue(shown, shown.contains("[can fix] Use a constant"));
             assertTrue(shown, shown.contains("magic number"));
-            assertTrue(shown, shown.contains("1 suggestion was left out (unknown stop"));
+            assertTrue(shown, shown.contains("1 suggestion was left out: 1 for an unknown stop"));
             ai.accept(0);
             assertEquals(1, accepted.size());
             assertSame(calculatorStop, accepted.get(0)[0]);
@@ -316,9 +316,64 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
             assertNull(panel.getAiRisk(calculatorStop));
 
             this.checkAiAnswersAreSavedAndRestored(panel, tours, calculatorStop);
+            this.checkAiSuggestionsAfterOwnReview(tours, calculatorStop);
         } finally {
             ReviewToolSettings.getInstance(this.getProject()).getState().aiEnabled = false;
         }
+    }
+
+    /**
+     * Remark suggestions are a second opinion: they are offered after the reviewer's own review, minor
+     * ones are collapsed, and the decisions are counted per model.
+     */
+    private void checkAiSuggestionsAfterOwnReview(ToursInReview tours, Stop calculatorStop) {
+        final java.util.Set<Stop> lookedAt = new java.util.HashSet<>();
+        final ReviewAiPanel ai = new ReviewAiPanel(this.getProject(), () -> tours, () -> "DEMO-2", () -> null,
+                (stop) -> { }, () -> { });
+        ai.setReviewerProgress(lookedAt::contains, () -> 3);
+        ai.setRemarkAcceptor((stop, line, type, text) -> true);
+        ai.suggestRemarks();
+        String shown = ai.getShownText();
+        assertTrue(shown, shown.contains("Suggested remarks: your own review first"));
+        assertTrue(shown, shown.contains("3 relevant stops have not been looked at yet."));
+        assertTrue(shown, shown.contains("Ask the AI anyway"));
+        assertTrue(ai.hasDeferredRequest());
+        ai.suggestRemarks(calculatorStop);
+        shown = ai.getShownText();
+        assertTrue(shown, shown.contains("You have not looked at the stop"));
+        // only the latest offer is shown
+        assertFalse(shown, shown.contains("3 relevant stops"));
+
+        final java.util.Map<Stop, ReviewAiPrompts.StopForAi> stops = ai.describeStopsWithoutDiffs(tours);
+        final int number = stops.get(calculatorStop).getNumber();
+        final String model = "test/model-" + System.nanoTime();
+        ai.remarksSuggested(new OpencodeClient.Answer("", model, com.eclipsesource.json.Json.parse(
+                "{\"remarks\":[{\"stop\":" + number + ",\"line\":0,\"kind\":\"can\",\"importance\":\"low\","
+                + "\"text\":\"Rename x\",\"reason\":\"\"},{\"stop\":" + number + ",\"line\":0,\"kind\":\"must\","
+                + "\"importance\":\"high\",\"text\":\"Overflow\",\"reason\":\"\"}]}").asObject()), stops, 0, number);
+        shown = ai.getShownText();
+        assertTrue(shown, shown.contains("[must fix, important] Overflow"));
+        assertTrue(shown, shown.contains("1 minor suggestion (e.g. naming or style)"));
+        assertFalse(shown, shown.contains("Rename x"));
+        ai.showMinorSuggestions(1);
+        assertTrue(ai.getShownText(), ai.getShownText().contains("[can fix, minor] Rename x"));
+
+        // the decisions are counted locally per model and kind
+        ai.reject(1);
+        ai.accept(0);
+        ai.accept(1);
+        assertEquals("2 of 2 suggestions accepted (100%; must 1/1, can 1/1)",
+                AiSuggestionStats.getInstance().describe(model));
+        assertNull(AiSuggestionStats.getInstance().describe(model + "-other"));
+
+        // the settings show the statistics of the model (for the default model: of the last one used)
+        final ReviewToolConfigurable configurable = new ReviewToolConfigurable(this.getProject());
+        configurable.createComponent();
+        configurable.reset();
+        final String shownStats = configurable.getShownModelStats();
+        assertNotNull(shownStats);
+        assertTrue(shownStats, shownStats.contains(model + ":<br>2 of 2 suggestions accepted"));
+        configurable.disposeUIResources();
     }
 
     /**
@@ -344,7 +399,7 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
         assertTrue(shown, shown.contains("Suggested remarks for Stop " + number + ":"));
         assertTrue(shown, shown.contains("[must fix] Check overflow"));
         assertFalse(shown, shown.contains("elsewhere"));
-        assertTrue(shown, shown.contains("1 suggestion was left out (other stop"));
+        assertTrue(shown, shown.contains("1 suggestion was left out: 1 for another stop"));
         first.reject(0);
         first.risksRated(new OpencodeClient.Answer("", null, com.eclipsesource.json.Json.parse(
                 "{\"stops\":[{\"stop\":" + number + ",\"risk\":\"medium\",\"reason\":\"overflow\"}]}").asObject()),

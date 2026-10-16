@@ -243,6 +243,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         this.aiPanel.setRiskListener(this.toursPanel::setAiRisks);
         this.aiPanel.setRemarks(this::remarksOfEarlierRounds, (remark) -> this.remarksPanel.jumpToRemark(remark));
         this.aiPanel.setHistoryListener(this::saveAiAnswers);
+        this.aiPanel.setReviewerProgress(this.toursPanel::isLookedAt, this.toursPanel::countRelevantStopsNotLookedAt);
         this.toursPanel.setProgressListener(this::progressChanged);
         this.progressSaveTimer = new Timer(3000, (e) -> this.saveProgress(false));
         this.progressSaveTimer.setRepeats(false);

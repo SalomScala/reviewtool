@@ -21,6 +21,7 @@ import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.ComboBox;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.ui.ComboboxSpeedSearch;
 import com.intellij.ui.TitledSeparator;
 import com.intellij.ui.components.JBCheckBox;
@@ -96,6 +97,8 @@ public class ReviewToolConfigurable implements Configurable {
     private JBCheckBox showRemarksInEditorBox;
     private JBTextField opencodePathField;
     private ComboBox<ModelItem> modelCombo;
+    private JBLabel modelStatsLabel;
+    private JBCheckBox aiAfterOwnReviewBox;
     /** The token as loaded from the settings (null while it is loaded in the background). */
     private String loadedToken;
 
@@ -149,6 +152,10 @@ public class ReviewToolConfigurable implements Configurable {
         // a fixed width: opencode can offer hundreds of models with long names
         this.modelCombo = new ComboBox<>(JBUI.scale(420));
         ComboboxSpeedSearch.installSpeedSearch(this.modelCombo, ModelItem::toString);
+        this.modelStatsLabel = hint("");
+        this.modelCombo.addActionListener((e) -> this.updateModelStats());
+        this.aiAfterOwnReviewBox = new JBCheckBox("Offer AI remark suggestions only after my own review of the code"
+                + " (recommended)");
 
         this.urlField.getEmptyText().setText("e.g. https://youtrack.example.com");
         final JButton testButton = new JButton("Test Connection");
@@ -192,7 +199,12 @@ public class ReviewToolConfigurable implements Configurable {
                 .addLabeledComponent("opencode executable:", this.opencodePathField)
                 .addLabeledComponent("Model:", this.modelCombo)
                 .addComponentToRightColumn(hint("\"Load Models\" lists the models opencode can use; type to search"))
+                .addComponentToRightColumn(this.modelStatsLabel)
                 .addComponentToRightColumn(checkOpencodePanel)
+                .addComponent(this.aiAfterOwnReviewBox)
+                .addComponent(hint("<html>The suggestions are a second opinion: in a study, reviewers who saw an AI"
+                        + " review first looked at less of the code<br>and did not find more of the severe problems."
+                        + " Otherwise, \"Ask the AI anyway\" is offered.</html>"))
                 .addComponent(new TitledSeparator("Grouping and Order of the Stops in a Tour"))
                 .addComponent(new JBLabel("<html>The active relations are used (in this priority order) to group"
                         + " and sort the stops when the tours are created.</html>"))
@@ -341,6 +353,30 @@ public class ReviewToolConfigurable implements Configurable {
         return ret;
     }
 
+    /**
+     * Shows how many suggestions of the selected model the reviewer accepted so far (counted locally).
+     */
+    private void updateModelStats() {
+        final AiSuggestionStats allStats = AiSuggestionStats.getInstance();
+        String model = this.getSelectedModel();
+        if (model.isEmpty()) {
+            final Probe probe = OpencodeServer.getInstance(this.project).getLastProbe();
+            model = probe == null || probe.getConfiguredModel() == null ? allStats.getLastModel()
+                    : probe.getConfiguredModel();
+        }
+        final String stats = model == null ? null : allStats.describe(model);
+        this.modelStatsLabel.setText(stats == null ? "" : "<html>Your decisions on the remark suggestions of "
+                + StringUtil.escapeXmlEntities(model) + ":<br>" + StringUtil.escapeXmlEntities(stats) + "</html>");
+        this.modelStatsLabel.setVisible(stats != null);
+    }
+
+    /**
+     * Returns the shown acceptance statistics of the model, or null if none are shown (for tests).
+     */
+    String getShownModelStats() {
+        return this.modelStatsLabel.isVisible() ? this.modelStatsLabel.getText() : null;
+    }
+
     private String getSelectedModel() {
         final Object item = this.modelCombo.getSelectedItem();
         return item instanceof ModelItem ? ((ModelItem) item).getId() : "";
@@ -372,7 +408,8 @@ public class ReviewToolConfigurable implements Configurable {
                 || this.aiEnabledBox.isSelected() != s.aiEnabled
                 || this.showRemarksInEditorBox.isSelected() != s.showRemarksInEditor
                 || !this.opencodePathField.getText().trim().equals(s.opencodePath)
-                || !this.getSelectedModel().equals(Objects.toString(s.aiModel, ""));
+                || !this.getSelectedModel().equals(Objects.toString(s.aiModel, ""))
+                || this.aiAfterOwnReviewBox.isSelected() != s.aiSuggestionsAfterOwnReview;
     }
 
     @Override
@@ -411,6 +448,7 @@ public class ReviewToolConfigurable implements Configurable {
         s.showRemarksInEditor = this.showRemarksInEditorBox.isSelected();
         s.opencodePath = this.opencodePathField.getText().trim();
         s.aiModel = this.getSelectedModel();
+        s.aiSuggestionsAfterOwnReview = this.aiAfterOwnReviewBox.isSelected();
     }
 
     @Override
@@ -436,6 +474,8 @@ public class ReviewToolConfigurable implements Configurable {
         this.showRemarksInEditorBox.setSelected(s.showRemarksInEditor);
         this.opencodePathField.setText(s.opencodePath);
         this.showModels(OpencodeServer.getInstance(this.project).getLastProbe(), Objects.toString(s.aiModel, ""));
+        this.aiAfterOwnReviewBox.setSelected(s.aiSuggestionsAfterOwnReview);
+        this.updateModelStats();
     }
 
     private boolean isTokenModified() {

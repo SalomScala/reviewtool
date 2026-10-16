@@ -104,6 +104,48 @@ public class ReviewAiPromptsTest {
                         new java.util.HashSet<>(Arrays.asList(1, 3)), 4));
     }
 
+    private static RemarkSuggestion suggestion(int stop, int line, String importance, String text) {
+        return new RemarkSuggestion(stop, line, "can", text, "", importance);
+    }
+
+    @Test
+    public void testFilterRemarkSuggestions() {
+        final java.util.Map<Integer, String> lines = new java.util.HashMap<>();
+        lines.put(1, "10-12");
+        lines.put(2, "7");
+        lines.put(3, null);
+        final List<RemarkSuggestion> remarks = Arrays.asList(
+                suggestion(1, 30, "high", "far away from the changed lines"),
+                suggestion(1, 13, "low", "next to the changed lines"),
+                suggestion(1, 0, "medium", "whole stop"),
+                suggestion(1, 11, "high", "important"),
+                suggestion(1, 10, "low", "fourth for stop 1"),
+                suggestion(2, 6, "medium", "stop 2"),
+                suggestion(3, 99, "low", "unknown lines"));
+        final ReviewAiPrompts.FilteredRemarks filtered = ReviewAiPrompts.filterRemarks(remarks, lines, 3, 4);
+        final List<String> texts = new java.util.ArrayList<>();
+        for (final RemarkSuggestion r : filtered.getShown()) {
+            texts.add(r.getText());
+        }
+        // sorted by importance; at most 3 per stop and 4 in total
+        assertEquals(Arrays.asList("important", "whole stop", "stop 2", "next to the changed lines"), texts);
+        assertEquals(1, filtered.getNotOnChangedLines());
+        assertEquals(2, filtered.getOverLimit());
+        assertTrue(filtered.getShown().get(3).isMinor());
+    }
+
+    @Test
+    public void testGuidelines() {
+        assertEquals("request", ReviewAiPrompts.withGuidelines("request", null));
+        assertEquals("request", ReviewAiPrompts.withGuidelines("request", "  \n"));
+        final String withGuidelines = ReviewAiPrompts.withGuidelines("request", "- Use Optional\n");
+        assertTrue(withGuidelines, withGuidelines.startsWith("request\n\nThe review guidelines of the project"));
+        assertTrue(withGuidelines, withGuidelines.endsWith("- Use Optional"));
+        final String shortened = ReviewAiPrompts.withGuidelines("r", "x".repeat(5000));
+        assertTrue(shortened.endsWith("x\n(shortened)"));
+        assertTrue(shortened.length() < 4200);
+    }
+
     @Test
     public void testRemarkSuggestions() {
         assertTrue(ReviewAiPrompts.remarksRequest().startsWith("Suggest review remarks"));
@@ -111,10 +153,15 @@ public class ReviewAiPromptsTest {
         final JsonObject item = schema.get("properties").asObject().get("remarks").asObject().get("items").asObject();
         assertEquals(Json.array("must", "can", "positive", "other"),
                 item.get("properties").asObject().get("kind").asObject().get("enum"));
-        assertEquals(Json.array("stop", "line", "kind", "text", "reason"), item.get("required"));
+        assertEquals(Json.array("stop", "line", "kind", "importance", "text", "reason"), item.get("required"));
+        assertEquals(Json.array("high", "medium", "low"),
+                item.get("properties").asObject().get("importance").asObject().get("enum"));
+        assertTrue(ReviewAiPrompts.remarksRequest().contains("suggest at most 8"));
+        assertTrue(ReviewAiPrompts.remarksRequest().contains("It is fine, and often right, to suggest none"));
 
         final List<RemarkSuggestion> remarks = ReviewAiPrompts.parseRemarks(Json.parse("{\"remarks\":["
-                + "{\"stop\":3,\"line\":36,\"kind\":\"must\",\"text\":\" Check for null \",\"reason\":\"NPE\"},"
+                + "{\"stop\":3,\"line\":36,\"kind\":\"must\",\"importance\":\"High\",\"text\":\" Check for null \","
+                + "\"reason\":\"NPE\"},"
                 + "{\"stop\":\"1\",\"line\":-4,\"kind\":\"Positive\",\"text\":\"Nice\"},"
                 + "{\"stop\":99,\"line\":1,\"kind\":\"must\",\"text\":\"unknown stop\",\"reason\":\"\"},"
                 + "{\"stop\":1,\"line\":1,\"kind\":\"blocker\",\"text\":\"unknown kind\",\"reason\":\"\"},"
@@ -126,6 +173,9 @@ public class ReviewAiPromptsTest {
         assertEquals("must", remarks.get(0).getKind());
         assertEquals("Check for null", remarks.get(0).getText());
         assertEquals("NPE", remarks.get(0).getReason());
+        assertEquals("high", remarks.get(0).getImportance());
+        // without (a known) importance: medium
+        assertEquals("medium", remarks.get(1).getImportance());
         assertEquals(1, remarks.get(1).getStop());
         assertEquals(0, remarks.get(1).getLine());
         assertEquals("positive", remarks.get(1).getKind());

@@ -2,6 +2,11 @@ package de.setsoftware.reviewtool.intellij;
 
 import java.awt.BorderLayout;
 import java.awt.Point;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -15,6 +20,8 @@ import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.IntSupplier;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -48,11 +55,13 @@ import de.setsoftware.reviewtool.base.Logger;
 import de.setsoftware.reviewtool.base.Pair;
 import de.setsoftware.reviewtool.intellij.OpencodeClient.Answer;
 import de.setsoftware.reviewtool.intellij.OpencodeClient.OpencodeException;
+import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.FilteredRemarks;
 import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.RemarkCheck;
 import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.RemarkForAi;
 import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.RemarkSuggestion;
 import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.StopForAi;
 import de.setsoftware.reviewtool.intellij.ReviewAiPrompts.StopRisk;
+import de.setsoftware.reviewtool.intellij.ReviewToolSettings.SettingsState;
 import de.setsoftware.reviewtool.model.api.IClassification;
 import de.setsoftware.reviewtool.model.api.IFragment;
 import de.setsoftware.reviewtool.model.changestructure.Stop;
@@ -109,14 +118,17 @@ final class ReviewAiPanel extends JPanel {
         private final Stop stop;
         private final StopForAi stopForAi;
         private final int conversation;
+        /** The model that suggested the remark (for the local acceptance statistics). */
+        private final String model;
         private boolean accepted;
         private boolean rejected;
 
-        Suggestion(RemarkSuggestion remark, Stop stop, StopForAi stopForAi, int conversation) {
+        Suggestion(RemarkSuggestion remark, Stop stop, StopForAi stopForAi, int conversation, String model) {
             this.remark = remark;
             this.stop = stop;
             this.stopForAi = stopForAi;
             this.conversation = conversation;
+            this.model = model;
         }
     }
 
@@ -133,6 +145,8 @@ final class ReviewAiPanel extends JPanel {
         private SavedAnswer saved;
         /** The conversation the entry belongs to. */
         private int conversation;
+        /** True iff the minor remark suggestions are shown (they are collapsed at first). */
+        private boolean minorShown;
 
         Entry(String title, String html, boolean error) {
             this(title, html, error, null);
@@ -206,6 +220,14 @@ final class ReviewAiPanel extends JPanel {
     private transient Runnable historyListener = () -> { };
     /** True while saved answers are shown again (they must not be saved again then). */
     private boolean restoring;
+    /** True iff the reviewer has looked at the stop (viewed it at least partly or marked it as checked). */
+    private transient Predicate<Stop> lookedAt = (stop) -> true;
+    /** The number of relevant stops the reviewer has not looked at yet. */
+    private transient IntSupplier relevantStopsNotLookedAt = () -> 0;
+    /** The request the reviewer can make with "Ask anyway" before the own review is finished. */
+    private transient Runnable deferredRequest;
+    /** The entry that offers the deferred request (it is removed when the request is made). */
+    private transient Entry deferredEntry;
 
     /**
      * @param tours Returns the current tours (null if there are none).
@@ -255,6 +277,16 @@ final class ReviewAiPanel extends JPanel {
             }
             if ("settings".equals(e.getDescription())) {
                 this.openSettings.run();
+            } else if ("deferred".equals(e.getDescription())) {
+                final Runnable request = this.deferredRequest;
+                if (request != null && !this.busy) {
+                    this.deferredRequest = null;
+                    this.entries.remove(this.deferredEntry);
+                    this.deferredEntry = null;
+                    request.run();
+                }
+            } else if (e.getDescription() != null && e.getDescription().startsWith("minor:")) {
+                this.showMinorSuggestions(Integer.parseInt(e.getDescription().substring("minor:".length())));
             } else if (e.getDescription() != null && e.getDescription().startsWith("stop:")) {
                 this.linkToStopClicked(e.getDescription());
             } else if (e.getDescription() != null && e.getDescription().startsWith("accept:")) {
@@ -301,6 +333,18 @@ final class ReviewAiPanel extends JPanel {
     }
 
     /**
+     * Sets the sources of the reviewer's progress: remark suggestions are offered as a second opinion
+     * after the reviewer's own review (see {@link SettingsState#aiSuggestionsAfterOwnReview}).
+     *
+     * @param lookedAt True iff the reviewer has looked at the stop.
+     * @param relevantStopsNotLookedAt The number of relevant stops the reviewer has not looked at yet.
+     */
+    void setReviewerProgress(Predicate<Stop> lookedAt, IntSupplier relevantStopsNotLookedAt) {
+        this.lookedAt = lookedAt;
+        this.relevantStopsNotLookedAt = relevantStopsNotLookedAt;
+    }
+
+    /**
      * Sets the callback that is called when the answers to save (see {@link #exportHistory()}) have changed.
      */
     void setHistoryListener(Runnable listener) {
@@ -329,7 +373,35 @@ final class ReviewAiPanel extends JPanel {
      * Asks the model for remark suggestions, which the user can accept or reject.
      */
     void suggestRemarks() {
+        final int notLookedAt = this.relevantStopsNotLookedAt.getAsInt();
+        if (this.isOwnReviewFirst() && this.tours.get() != null && notLookedAt > 0) {
+            this.offerAfterOwnReview(Kind.REMARKS.title, (notLookedAt == 1 ? "1 relevant stop has" : notLookedAt
+                    + " relevant stops have") + " not been looked at yet.", () -> this.ask(Kind.REMARKS, null));
+            return;
+        }
         this.ask(Kind.REMARKS, null);
+    }
+
+    private boolean isOwnReviewFirst() {
+        final SettingsState settings = ReviewToolSettings.getInstance(this.project).getState();
+        return settings.aiEnabled && settings.aiSuggestionsAfterOwnReview;
+    }
+
+    /**
+     * Explains that the remark suggestions are a second opinion after the reviewer's own review and lets
+     * the reviewer ask anyway.
+     */
+    private void offerAfterOwnReview(String title, String reason, Runnable request) {
+        // only the latest offer is shown
+        this.entries.remove(this.deferredEntry);
+        this.deferredRequest = request;
+        this.deferredEntry = new Entry(title + ": your own review first", "<p>" + SimpleMarkdown.escape(reason)
+                + " Review the code yourself first and use the AI suggestions as a second opinion afterwards: in"
+                + " a study, reviewers who saw an AI review first looked at less of the code and did not find"
+                + " more of the severe problems.</p><p><a href='deferred'>Ask the AI anyway</a></p>"
+                + "<p class='hint'>This can be switched off in the settings (\"Offer AI remark suggestions only"
+                + " after my own review\").</p>", false);
+        this.addEntry(this.deferredEntry);
     }
 
     /**
@@ -340,6 +412,12 @@ final class ReviewAiPanel extends JPanel {
             this.addEntry(new Entry("Suggest remarks for a stop",
                     "<p>Select a stop in the \"Tours\" tab first (or use \"Suggest Remarks with AI\" in its"
                     + " context menu).</p>", true));
+            return;
+        }
+        if (this.isOwnReviewFirst() && !this.lookedAt.test(stop)) {
+            this.offerAfterOwnReview(Kind.REMARKS.title, "You have not looked at the stop "
+                    + this.relativePath(stop) + (lines(stop) == null ? "" : ":" + lines(stop)) + " yet.",
+                    () -> this.ask(Kind.REMARKS, stop));
             return;
         }
         this.ask(Kind.REMARKS, stop);
@@ -457,7 +535,9 @@ final class ReviewAiPanel extends JPanel {
                     if (stop != null && stopForAi == null) {
                         throw new OpencodeException("The stop is not part of the current tours.", false, null);
                     }
-                    text.append(request(kind, stopForAi, remarks));
+                    final String request = request(kind, stopForAi, remarks);
+                    text.append(kind == Kind.REMARKS
+                            ? ReviewAiPrompts.withGuidelines(request, ReviewAiPanel.this.readGuidelines()) : request);
                     client.checkModel(model);
                     String session = ReviewAiPanel.this.sessionId;
                     if (session == null) {
@@ -515,6 +595,24 @@ final class ReviewAiPanel extends JPanel {
         }.queue();
     }
 
+    /**
+     * Reads the review guidelines of the project for the AI (see {@link ReviewAiPrompts#GUIDELINES_FILE}),
+     * or returns null if there are none.
+     */
+    private String readGuidelines() {
+        final String base = this.project.getBasePath();
+        if (base == null) {
+            return null;
+        }
+        final Path file = Paths.get(base, ReviewAiPrompts.GUIDELINES_FILE);
+        try {
+            return Files.isRegularFile(file) ? new String(Files.readAllBytes(file), StandardCharsets.UTF_8) : null;
+        } catch (final IOException e) {
+            Logger.warn("could not read the review guidelines " + file, e);
+            return null;
+        }
+    }
+
     private static String request(Kind kind, StopForAi stop, List<RemarkForAi> remarks) {
         switch (kind) {
         case CHECK:
@@ -541,7 +639,19 @@ final class ReviewAiPanel extends JPanel {
         if (known != null) {
             return known;
         }
-        final Map<Stop, StopForAi> inOrder = this.describeStops(currentTours, indicator, true);
+        final Map<Stop, StopForAi> restored = this.conversationStops;
+        final Map<Stop, StopForAi> inOrder;
+        if (restored == null) {
+            inOrder = this.describeStops(currentTours, indicator, true);
+        } else {
+            // the answers shown again refer to the stops by these numbers (the tours may have been
+            // reordered since, e.g. by activating a tour)
+            inOrder = new LinkedHashMap<>();
+            for (final Map.Entry<Stop, StopForAi> e : restored.entrySet()) {
+                indicator.checkCanceled();
+                inOrder.put(e.getKey(), e.getValue().withDiff(diff(e.getKey())));
+            }
+        }
         this.stopsForAi = inOrder;
         return inOrder;
     }
@@ -659,21 +769,40 @@ final class ReviewAiPanel extends JPanel {
         final Map<Integer, Stop> numbers = byNumber(stops);
         final List<RemarkSuggestion> remarks = ReviewAiPrompts.parseRemarks(answer.getStructured(),
                 onlyStop > 0 && numbers.containsKey(onlyStop) ? Collections.singleton(onlyStop) : numbers.keySet());
+        final Map<Integer, String> linesOfStops = new HashMap<>();
+        for (final StopForAi s : stops.values()) {
+            linesOfStops.put(s.getNumber(), s.getLines());
+        }
+        final FilteredRemarks filtered = ReviewAiPrompts.filterRemarks(remarks, linesOfStops,
+                ReviewAiPrompts.MAX_SUGGESTIONS_PER_STOP, ReviewAiPrompts.MAX_SUGGESTIONS);
         final List<Suggestion> entrySuggestions = new ArrayList<>();
-        for (final RemarkSuggestion remark : remarks) {
+        for (final RemarkSuggestion remark : filtered.getShown()) {
             final Stop stop = numbers.get(remark.getStop());
-            entrySuggestions.add(new Suggestion(remark, stop, stops.get(stop), this.conversation));
+            entrySuggestions.add(new Suggestion(remark, stop, stops.get(stop), this.conversation, answer.getModel()));
         }
         final StringBuilder html = new StringBuilder();
-        if (remarks.isEmpty()) {
+        if (entrySuggestions.isEmpty()) {
             html.append("<p>The model has no remarks to suggest").append(onlyStop > 0 ? " for this stop" : "")
                     .append(".</p>");
         }
-        final int leftOut = ReviewAiPrompts.count(answer.getStructured(), "remarks") - remarks.size();
-        if (leftOut > 0) {
-            html.append("<p class='hint'>").append(leftOut).append(leftOut == 1 ? " suggestion was" : " suggestions were")
-                    .append(onlyStop > 0 ? " left out (other stop, unknown kind or no text).</p>"
-                            : " left out (unknown stop, unknown kind or no text).</p>");
+        final List<String> leftOut = new ArrayList<>();
+        final int invalid = ReviewAiPrompts.count(answer.getStructured(), "remarks") - remarks.size();
+        if (invalid > 0) {
+            leftOut.add(invalid + (onlyStop > 0 ? " for another stop, with an unknown kind or without text"
+                    : " for an unknown stop, with an unknown kind or without text"));
+        }
+        if (filtered.getNotOnChangedLines() > 0) {
+            leftOut.add(filtered.getNotOnChangedLines() + " on lines that have not been changed");
+        }
+        if (filtered.getOverLimit() > 0) {
+            leftOut.add(filtered.getOverLimit() + " less important beyond the limit of "
+                    + ReviewAiPrompts.MAX_SUGGESTIONS_PER_STOP + " per stop and " + ReviewAiPrompts.MAX_SUGGESTIONS
+                    + " in total");
+        }
+        if (!leftOut.isEmpty()) {
+            final int count = invalid + filtered.getNotOnChangedLines() + filtered.getOverLimit();
+            html.append("<p class='hint'>").append(count).append(count == 1 ? " suggestion was" : " suggestions were")
+                    .append(" left out: ").append(SimpleMarkdown.escape(String.join("; ", leftOut))).append(".</p>");
         }
         appendOmittedHint(html, omittedDiffs);
         final StopForAi stop = onlyStop > 0 ? stops.get(numbers.get(onlyStop)) : null;
@@ -821,35 +950,73 @@ final class ReviewAiPanel extends JPanel {
         }
     }
 
-    private String suggestionsHtml(List<Suggestion> list) {
+    private String suggestionsHtml(Entry entry, int entryIndex) {
         final StringBuilder html = new StringBuilder();
-        for (final Suggestion s : list) {
-            final int id = this.suggestions.indexOf(s);
-            final RemarkSuggestion r = s.remark;
-            final String location = s.stopForAi.getPath().replaceFirst(".*/", "")
-                    + (r.getLine() > 0 ? ":" + r.getLine() : "");
-            html.append("<p>").append(s.rejected ? "<s>" : "").append("<b>[").append(kindLabel(r.getKind()))
-                    .append("]</b> ").append(SimpleMarkdown.escape(r.getText())).append(s.rejected ? "</s>" : "")
-                    .append("<br>");
-            final String stopLink = s.conversation == this.conversation
-                    ? "<a href='stop:" + s.conversation + ":" + r.getStop() + "'>Stop " + r.getStop() + "</a>"
-                    : "Stop " + r.getStop();
-            html.append("<span class='hint'>").append(stopLink).append(", ").append(SimpleMarkdown.escape(location));
-            if (!r.getReason().isEmpty()) {
-                html.append(" &ndash; ").append(SimpleMarkdown.escape(r.getReason()));
-            }
-            html.append("</span><br>");
-            if (s.accepted) {
-                html.append("<i>Added to the review remarks.</i>");
-            } else if (s.rejected) {
-                html.append("<i>Rejected.</i> <a href='accept:").append(id).append("'>Accept anyway...</a>");
+        final List<Suggestion> minor = new ArrayList<>();
+        for (final Suggestion s : entry.suggestions) {
+            if (s.remark.isMinor()) {
+                minor.add(s);
             } else {
-                html.append("<a href='accept:").append(id).append("'>Accept...</a> &nbsp; <a href='reject:")
-                        .append(id).append("'>Reject</a>");
+                this.appendSuggestion(html, s);
             }
-            html.append("</p>");
+        }
+        if (!minor.isEmpty() && !entry.minorShown) {
+            html.append("<p class='hint'>").append(minor.size())
+                    .append(minor.size() == 1 ? " minor suggestion (e.g. naming or style)" : " minor suggestions (e.g."
+                            + " naming or style)")
+                    .append(" &nbsp; <a href='minor:").append(entryIndex).append("'>Show</a></p>");
+        } else {
+            for (final Suggestion s : minor) {
+                this.appendSuggestion(html, s);
+            }
         }
         return html.toString();
+    }
+
+    /**
+     * Shows the collapsed minor remark suggestions of the entry with the given index (package-private for
+     * tests).
+     */
+    void showMinorSuggestions(int entryIndex) {
+        if (entryIndex >= 0 && entryIndex < this.entries.size()) {
+            this.entries.get(entryIndex).minorShown = true;
+            this.renderKeepingPosition();
+        }
+    }
+
+    /**
+     * True iff the reviewer can still make a request with "Ask the AI anyway" (package-private for tests).
+     */
+    boolean hasDeferredRequest() {
+        return this.deferredRequest != null;
+    }
+
+    private void appendSuggestion(StringBuilder html, Suggestion s) {
+        final int id = this.suggestions.indexOf(s);
+        final RemarkSuggestion r = s.remark;
+        final String location = s.stopForAi.getPath().replaceFirst(".*/", "")
+                + (r.getLine() > 0 ? ":" + r.getLine() : "");
+        html.append("<p>").append(s.rejected ? "<s>" : "").append("<b>[").append(kindLabel(r.getKind()))
+                .append("high".equals(r.getImportance()) ? ", important" : r.isMinor() ? ", minor" : "")
+                .append("]</b> ").append(SimpleMarkdown.escape(r.getText())).append(s.rejected ? "</s>" : "")
+                .append("<br>");
+        final String stopLink = s.conversation == this.conversation
+                ? "<a href='stop:" + s.conversation + ":" + r.getStop() + "'>Stop " + r.getStop() + "</a>"
+                : "Stop " + r.getStop();
+        html.append("<span class='hint'>").append(stopLink).append(", ").append(SimpleMarkdown.escape(location));
+        if (!r.getReason().isEmpty()) {
+            html.append(" &ndash; ").append(SimpleMarkdown.escape(r.getReason()));
+        }
+        html.append("</span><br>");
+        if (s.accepted) {
+            html.append("<i>Added to the review remarks.</i>");
+        } else if (s.rejected) {
+            html.append("<i>Rejected.</i> <a href='accept:").append(id).append("'>Accept anyway...</a>");
+        } else {
+            html.append("<a href='accept:").append(id).append("'>Accept...</a> &nbsp; <a href='reject:")
+                    .append(id).append("'>Reject</a>");
+        }
+        html.append("</p>");
     }
 
     /**
@@ -865,6 +1032,11 @@ final class ReviewAiPanel extends JPanel {
         }
         // the user can check and edit the remark before it is added
         if (this.remarkAcceptor.accept(s.stop, s.remark.getLine(), remarkType(s.remark.getKind()), s.remark.getText())) {
+            final AiSuggestionStats stats = AiSuggestionStats.getInstance();
+            if (s.rejected) {
+                stats.count(s.model, s.remark.getKind(), false, -1);
+            }
+            stats.count(s.model, s.remark.getKind(), true, 1);
             s.accepted = true;
             s.rejected = false;
             this.renderKeepingPosition();
@@ -879,7 +1051,12 @@ final class ReviewAiPanel extends JPanel {
         if (id < 0 || id >= this.suggestions.size()) {
             return;
         }
-        this.suggestions.get(id).rejected = true;
+        final Suggestion s = this.suggestions.get(id);
+        if (s.accepted || s.rejected) {
+            return;
+        }
+        AiSuggestionStats.getInstance().count(s.model, s.remark.getKind(), false, 1);
+        s.rejected = true;
         this.renderKeepingPosition();
         this.historyListener.run();
     }
@@ -1175,8 +1352,9 @@ final class ReviewAiPanel extends JPanel {
                     + "<li><b>Summarize Changes</b>: an overview as a starting point (what, why, what to look at"
                     + " carefully)</li><li><b>Explain Selected Stop</b> (or \"Explain with AI\" in the context menu"
                     + " of a stop): what the stop changes and what to check</li>"
-                    + "<li><b>Suggest Remarks</b>: remarks you can accept (and edit) or reject (for a single stop:"
-                    + " \"Suggest Remarks with AI\" in its context menu)</li>"
+                    + "<li><b>Suggest Remarks</b>: a second opinion after your own review - remarks you can accept"
+                    + " (and edit) or reject (for a single stop: \"Suggest Remarks with AI\" in its context"
+                    + " menu)</li>"
                     + "<li><b>Rate Risks</b>: which stops need particular attention (shown in the \"Tours\""
                     + " tab)</li>"
                     + "<li><b>Check Remarks</b> (from the second review round on): whether the changes fix the"
@@ -1189,7 +1367,7 @@ final class ReviewAiPanel extends JPanel {
             final Entry e = this.entries.get(i);
             html.append("<h3").append(e.error ? " style='color:#c75450'" : "").append('>')
                     .append(SimpleMarkdown.escape(e.title)).append("</h3>")
-                    .append(e.suggestions == null ? "" : this.suggestionsHtml(e.suggestions))
+                    .append(e.suggestions == null ? "" : this.suggestionsHtml(e, i))
                     .append(e.html).append("<hr>");
         }
         html.append("</body></html>");
