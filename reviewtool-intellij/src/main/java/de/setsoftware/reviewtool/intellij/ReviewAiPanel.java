@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.function.BiConsumer;
@@ -56,12 +57,12 @@ import de.setsoftware.reviewtool.model.remarks.RemarkType;
 import de.setsoftware.reviewtool.model.remarks.ReviewRemark;
 
 /**
- * The "AI" tab: AI support for the review via a local opencode (optional, off by default). It asks the
- * model configured in opencode for a summary of the changes as a starting point, for explanations of
- * single stops, for remark suggestions (which the reviewer accepts or rejects) and for a rating of the
- * stops' risk (shown in the "Tours" tab), and shows the answers. All requests about the same tours go to
- * one opencode session, so the changes are sent only once; the model may read (but not change) the
- * project's files.
+ * The "AI" tab: AI support for the review via a local opencode (optional, off by default). It asks the model
+ * (the default model of the opencode configuration or the one chosen in the settings) for a summary of the
+ * changes as a starting point, for explanations of single stops, for remark suggestions (which the reviewer
+ * accepts or rejects) and for a rating of the stops' risk (shown in the "Tours" tab), and shows the answers. All
+ * requests about the same tours go to one opencode session, so the changes are sent only once; the model may
+ * read (but not change) the project's files.
  */
 final class ReviewAiPanel extends JPanel {
 
@@ -369,6 +370,7 @@ final class ReviewAiPanel extends JPanel {
         }
         this.setBusy(true);
         final String reviewName = this.reviewTitle.get();
+        final String model = Objects.toString(ReviewToolSettings.getInstance(this.project).getState().aiModel, "");
         final String fullTitle = stop == null ? title
                 : title + " of " + this.relativePath(stop) + (lines(stop) == null ? "" : ":" + lines(stop));
         this.setStatus("Asking the AI (" + fullTitle + ")...");
@@ -394,6 +396,7 @@ final class ReviewAiPanel extends JPanel {
                         throw new OpencodeException("The stop is not part of the current tours.", false, null);
                     }
                     text.append(request(kind, stopForAi, remarks));
+                    client.checkModel(model);
                     String session = ReviewAiPanel.this.sessionId;
                     if (session == null) {
                         session = client.createSession("CoRT review: " + reviewName);
@@ -402,16 +405,16 @@ final class ReviewAiPanel extends JPanel {
                     final String system = ReviewAiPrompts.system(Locale.getDefault());
                     final Answer answer;
                     if (kind == Kind.REMARKS) {
-                        answer = client.promptStructured(session, system, text.toString(),
+                        answer = client.promptStructured(session, model, system, text.toString(),
                                 ReviewAiPrompts.remarksSchema(), indicator::isCanceled);
                     } else if (kind == Kind.RISKS) {
-                        answer = client.promptStructured(session, system, text.toString(),
+                        answer = client.promptStructured(session, model, system, text.toString(),
                                 ReviewAiPrompts.risksSchema(), indicator::isCanceled);
                     } else if (kind == Kind.CHECK) {
-                        answer = client.promptStructured(session, system, text.toString(),
+                        answer = client.promptStructured(session, model, system, text.toString(),
                                 ReviewAiPrompts.remarkChecksSchema(), indicator::isCanceled);
                     } else {
-                        answer = client.prompt(session, system, text.toString(), indicator::isCanceled);
+                        answer = client.prompt(session, model, system, text.toString(), indicator::isCanceled);
                     }
                     final String finalSession = session;
                     final int finalOmitted = omitted;
@@ -845,13 +848,16 @@ final class ReviewAiPanel extends JPanel {
     private void render(Point position) {
         final StringBuilder html = new StringBuilder("<html><body>");
         if (!this.isEnabledInSettings()) {
-            html.append("<p><b>AI support is off.</b></p><p>CoRT can ask the AI model configured in your local"
+            html.append("<p><b>AI support is off.</b></p><p>CoRT can ask an AI model via your local"
                     + " <b>opencode</b> for a summary of the changes, for explanations of single stops, for remark"
                     + " suggestions and for the stops that need particular attention. The diffs of the review are"
                     + " then sent to that model; the model may read the project's files but cannot change"
                     + " anything.</p><p><a href='settings'>Enable it in the settings</a></p>");
         } else if (this.entries.isEmpty()) {
-            html.append("<p>Ask the AI model configured in opencode about the review:</p><ul>"
+            final String model = ReviewToolSettings.getInstance(this.project).getState().aiModel;
+            html.append("<p>Ask the AI model (").append(model == null || model.isEmpty()
+                    ? "the default of the opencode configuration" : SimpleMarkdown.escape(model))
+                    .append(", <a href='settings'>change</a>) about the review:</p><ul>"
                     + "<li><b>Summarize Changes</b>: an overview as a starting point (what, why, what to look at"
                     + " carefully)</li><li><b>Explain Selected Stop</b> (or \"Explain with AI\" in the context menu"
                     + " of a stop): what the stop changes and what to check</li>"

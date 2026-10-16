@@ -42,6 +42,8 @@ public final class ReviewToolSettings implements PersistentStateComponent<Review
         public boolean aiEnabled;
         /** The opencode executable (a name on the PATH or an absolute path). */
         public String opencodePath = "opencode";
+        /** The model for the AI support ("provider/model"); empty = the default of the opencode configuration. */
+        public String aiModel = "";
         /** True iff the text of the review remarks is shown at the end of their lines in the editor. */
         public boolean showRemarksInEditor = true;
     }

@@ -8,7 +8,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Comparator;
+import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -23,8 +26,9 @@ import com.eclipsesource.json.JsonValue;
 
 /**
  * A small client for the HTTP API of a local opencode server ({@code opencode serve}). opencode
- * runs the AI models configured by the user (or the company); CoRT only sends prompts to it and
- * never chooses a model. The sessions are created read-only: the model may read and search the files
+ * runs the AI models configured by the user (or the company); CoRT only sends prompts to it, by default
+ * to the model of the opencode configuration, or to one of the models opencode offers that the user
+ * chose in the settings. The sessions are created read-only: the model may read and search the files
  * of the project, but all other tools (editing, shell, web, ...) are denied.
  */
 final class OpencodeClient {
@@ -84,6 +88,43 @@ final class OpencodeClient {
          */
         String getModel() {
             return this.model;
+        }
+    }
+
+    /**
+     * A model opencode offers (a model of a provider with credentials or a free one).
+     */
+    static final class ModelInfo {
+        private final String providerId;
+        private final String providerName;
+        private final String modelId;
+        private final String modelName;
+
+        ModelInfo(String providerId, String providerName, String modelId, String modelName) {
+            this.providerId = providerId;
+            this.providerName = providerName;
+            this.modelId = modelId;
+            this.modelName = modelName;
+        }
+
+        /**
+         * The id of the model as used in the opencode configuration ("provider/model").
+         */
+        String getId() {
+            return this.providerId + "/" + this.modelId;
+        }
+
+        String getProviderName() {
+            return this.providerName;
+        }
+
+        String getModelName() {
+            return this.modelName;
+        }
+
+        @Override
+        public String toString() {
+            return this.providerName + ": " + this.modelName + "  (" + this.getId() + ")";
         }
     }
 
@@ -148,6 +189,76 @@ final class OpencodeClient {
     }
 
     /**
+     * Returns the models opencode offers, sorted by provider and name.
+     */
+    List<ModelInfo> availableModels() {
+        final JsonValue result = this.send("GET", "/config/providers", null, SHORT_TIMEOUT);
+        final List<ModelInfo> ret = new ArrayList<>();
+        final JsonValue providers = result.isObject() ? result.asObject().get("providers") : null;
+        if (providers == null || !providers.isArray()) {
+            return ret;
+        }
+        for (final JsonValue provider : providers.asArray()) {
+            if (!provider.isObject()) {
+                continue;
+            }
+            final JsonObject p = provider.asObject();
+            final String providerId = p.getString("id", null);
+            final JsonValue models = p.get("models");
+            if (providerId == null || models == null || !models.isObject()) {
+                continue;
+            }
+            final String providerName = p.getString("name", providerId);
+            for (final JsonObject.Member model : models.asObject()) {
+                final String name = model.getValue().isObject()
+                        ? model.getValue().asObject().getString("name", model.getName()) : model.getName();
+                ret.add(new ModelInfo(providerId, providerName, model.getName(), name));
+            }
+        }
+        ret.sort(Comparator.comparing(ModelInfo::getProviderName, String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(ModelInfo::getModelName, String.CASE_INSENSITIVE_ORDER));
+        return ret;
+    }
+
+    /**
+     * Checks that opencode offers the given model ("provider/model"; null or empty for the default
+     * model of the opencode configuration). opencode only answers an unknown model with an
+     * "unexpected server error", so it is checked before the prompt is sent.
+     */
+    void checkModel(String model) {
+        if (isDefaultModel(model)) {
+            return;
+        }
+        for (final ModelInfo available : this.availableModels()) {
+            if (available.getId().equals(model.trim())) {
+                return;
+            }
+        }
+        throw new OpencodeException("The model \"" + model.trim() + "\" chosen in the CoRT settings is not"
+                + " available in opencode (unknown model, or opencode has no credentials for its provider)."
+                + " Choose another model in the settings.", true, null);
+    }
+
+    private static boolean isDefaultModel(String model) {
+        return model == null || model.trim().isEmpty();
+    }
+
+    /**
+     * Converts "provider/model" to the model reference of the opencode API (the provider id contains no
+     * "/", but the model id can, e.g. "openrouter/anthropic/claude-x").
+     */
+    static JsonObject modelReference(String model) {
+        final String trimmed = model.trim();
+        final int slash = trimmed.indexOf('/');
+        if (slash <= 0 || slash == trimmed.length() - 1) {
+            throw new OpencodeException("The model \"" + trimmed + "\" in the CoRT settings is not of the form"
+                    + " \"provider/model\".", true, null);
+        }
+        return new JsonObject().add("providerID", trimmed.substring(0, slash))
+                .add("modelID", trimmed.substring(slash + 1));
+    }
+
+    /**
      * Creates a new read-only session and returns its id.
      */
     String createSession(String title) {
@@ -168,12 +279,14 @@ final class OpencodeClient {
     /**
      * Sends the text to the session and waits for the answer of the model.
      *
+     * @param model The model ("provider/model"), or null or empty for the default model of the opencode
+     *      configuration.
      * @param system Additional system instructions (appended to the ones of opencode).
      * @param canceled Is polled while waiting; if it returns true, the answer is aborted.
      * @return The answer.
      */
-    Answer prompt(String sessionId, String system, String text, BooleanSupplier canceled) {
-        return answer(sessionId, this.sendPrompt(sessionId, system, text, null, canceled));
+    Answer prompt(String sessionId, String model, String system, String text, BooleanSupplier canceled) {
+        return answer(sessionId, this.sendPrompt(sessionId, model, system, text, null, canceled));
     }
 
     /**
@@ -182,18 +295,21 @@ final class OpencodeClient {
      *
      * @return The answer, with the object matching the schema in {@link Answer#getStructured()}.
      */
-    Answer promptStructured(String sessionId, String system, String text, JsonObject schema,
+    Answer promptStructured(String sessionId, String model, String system, String text, JsonObject schema,
             BooleanSupplier canceled) {
         final JsonObject format = new JsonObject().add("type", "json_schema").add("schema", schema)
                 .add("retryCount", 2);
-        return structuredAnswer(sessionId, this.sendPrompt(sessionId, system, text, format, canceled));
+        return structuredAnswer(sessionId, this.sendPrompt(sessionId, model, system, text, format, canceled));
     }
 
-    private JsonValue sendPrompt(String sessionId, String system, String text, JsonObject format,
+    private JsonValue sendPrompt(String sessionId, String model, String system, String text, JsonObject format,
             BooleanSupplier canceled) {
         final JsonObject body = new JsonObject()
                 .add("system", system)
                 .add("parts", new JsonArray().add(new JsonObject().add("type", "text").add("text", text)));
+        if (!isDefaultModel(model)) {
+            body.add("model", modelReference(model));
+        }
         if (format != null) {
             body.add("format", format);
         }
@@ -295,11 +411,12 @@ final class OpencodeClient {
             return new OpencodeException("The answer has been aborted.", false, null);
         case "StructuredOutputError":
             return new OpencodeException("The model did not answer in the expected format (" + message
-                    + "). Some models cannot answer in a given format; try another model in the opencode"
-                    + " configuration.", false, null);
+                    + "). Some models cannot answer in a given format; try another model (CoRT settings or"
+                    + " opencode configuration).", false, null);
         case "ContextOverflowError":
             return new OpencodeException("The changes are too big for the model's context window (" + message
-                    + "). Try a model with a bigger context window in the opencode configuration.", false, null);
+                    + "). Try a model with a bigger context window (CoRT settings or opencode"
+                    + " configuration).", false, null);
         default:
             return new OpencodeException("The model reported an error (" + name + "): " + message, false, null);
         }
