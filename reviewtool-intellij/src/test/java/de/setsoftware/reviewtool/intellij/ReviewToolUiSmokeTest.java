@@ -314,9 +314,72 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
             // the ratings belong to the tours
             panel.setAiRisks(null, java.util.Collections.emptyMap());
             assertNull(panel.getAiRisk(calculatorStop));
+
+            this.checkAiAnswersAreSavedAndRestored(panel, tours, calculatorStop);
         } finally {
             ReviewToolSettings.getInstance(this.getProject()).getState().aiEnabled = false;
         }
+    }
+
+    /**
+     * The answers of the AI are saved and shown again for the same tours (e.g. after a restart of the IDE),
+     * with the state of the suggestions and the risk ratings, but not for other tours.
+     */
+    private void checkAiAnswersAreSavedAndRestored(ReviewToursPanel panel, ToursInReview tours, Stop calculatorStop) {
+        final java.util.concurrent.atomic.AtomicInteger changes = new java.util.concurrent.atomic.AtomicInteger();
+        final ReviewAiPanel first = new ReviewAiPanel(this.getProject(), () -> tours, () -> "DEMO-2", () -> null,
+                (stop) -> { }, () -> { });
+        first.setRiskListener(panel::setAiRisks);
+        first.setHistoryListener(changes::incrementAndGet);
+        assertNull(first.exportHistory());
+        final java.util.Map<Stop, ReviewAiPrompts.StopForAi> stops = first.describeStopsWithoutDiffs(tours);
+        final int number = stops.get(calculatorStop).getNumber();
+        final int other = number == 1 ? 2 : 1;
+        // suggestions for one stop: the ones for other stops are left out
+        first.remarksSuggested(new OpencodeClient.Answer("", "acme/model", com.eclipsesource.json.Json.parse(
+                "{\"remarks\":[{\"stop\":" + number + ",\"line\":3,\"kind\":\"must\",\"text\":\"Check overflow\","
+                + "\"reason\":\"int\"},{\"stop\":" + other + ",\"line\":1,\"kind\":\"can\",\"text\":\"elsewhere\","
+                + "\"reason\":\"\"}]}").asObject()), stops, 0, number);
+        String shown = first.getShownText();
+        assertTrue(shown, shown.contains("Suggested remarks for Stop " + number + ":"));
+        assertTrue(shown, shown.contains("[must fix] Check overflow"));
+        assertFalse(shown, shown.contains("elsewhere"));
+        assertTrue(shown, shown.contains("1 suggestion was left out (other stop"));
+        first.reject(0);
+        first.risksRated(new OpencodeClient.Answer("", null, com.eclipsesource.json.Json.parse(
+                "{\"stops\":[{\"stop\":" + number + ",\"risk\":\"medium\",\"reason\":\"overflow\"}]}").asObject()),
+                stops, tours, 0);
+        assertEquals(3, changes.get());
+        final String history = first.exportHistory();
+        assertNotNull(history);
+        panel.setAiRisks(null, java.util.Collections.emptyMap());
+
+        final ReviewAiPanel second = new ReviewAiPanel(this.getProject(), () -> tours, () -> "DEMO-2", () -> null,
+                (stop) -> { }, () -> { });
+        second.setRiskListener(panel::setAiRisks);
+        final java.util.concurrent.atomic.AtomicInteger restoredChanges =
+                new java.util.concurrent.atomic.AtomicInteger();
+        second.setHistoryListener(restoredChanges::incrementAndGet);
+        assertEquals(2, second.restoreHistory(history, tours));
+        shown = second.getShownText();
+        assertTrue(shown, shown.contains("Check overflow"));
+        assertTrue(shown, shown.contains("Rejected."));
+        assertTrue(shown, shown.contains("medium Stop " + number));
+        assertTrue(shown, shown.contains("acme/model"));
+        assertEquals("medium", panel.getAiRisk(calculatorStop).getRisk());
+        assertEquals(0, restoredChanges.get());
+        // saved again, the answers are the same
+        assertEquals(history, second.exportHistory());
+        panel.setAiRisks(null, java.util.Collections.emptyMap());
+
+        // answers about other stops are not shown
+        final com.eclipsesource.json.JsonObject changed = com.eclipsesource.json.Json.parse(history).asObject();
+        changed.get("stops").asArray().get(0).asObject().set("path", "Other.java");
+        final ReviewAiPanel third = new ReviewAiPanel(this.getProject(), () -> tours, () -> "DEMO-2", () -> null,
+                (stop) -> { }, () -> { });
+        assertEquals(0, third.restoreHistory(changed.toString(), tours));
+        assertEquals(0, third.restoreHistory("not json", tours));
+        assertNull(third.exportHistory());
     }
 
     public void testWorkingCopyWithCrlfOnlyShowsTheRealChanges() {
