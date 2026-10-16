@@ -14,6 +14,7 @@ import javax.swing.JRadioButton;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
+import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.components.JBTextArea;
@@ -110,7 +111,10 @@ final class EndReviewDialog extends DialogWrapper {
             options.add(button);
         }
         if (this.warning != null) {
-            final JBLabel warningLabel = new JBLabel(this.warning, AllIcons.General.Warning, JBLabel.LEADING);
+            // the warning can name several stops: it is wrapped
+            final JBLabel warningLabel = new JBLabel("<html><body style='width:" + JBUI.scale(480) + "px'>"
+                    + StringUtil.escapeXmlEntities(this.warning) + "</body></html>", AllIcons.General.Warning,
+                    JBLabel.LEADING);
             warningLabel.setBorder(JBUI.Borders.emptyBottom(4));
             final JPanel south = new JPanel(new BorderLayout());
             south.add(warningLabel, BorderLayout.NORTH);

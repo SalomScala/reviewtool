@@ -537,7 +537,18 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
             final Stop firstStop = tours.getTopmostTours().get(0).getStops().get(0);
             final int notVisited = panel.countRelevantStopsNotFullyVisited();
             assertTrue(notVisited > 0);
+            // nothing has been viewed yet: every relevant stop is named in the warning at the end of the review
+            final List<ReviewCoverage.StopCoverage> coverage = panel.coverageOfRelevantStops();
+            assertEquals(notVisited, coverage.size());
+            for (final ReviewCoverage.StopCoverage c : coverage) {
+                assertEquals(ReviewCoverage.State.NOT_VIEWED, c.getState());
+            }
+            assertTrue(ReviewCoverage.warning(coverage), ReviewCoverage.warning(coverage).contains(
+                    coverage.get(0).getDescription()));
+            assertTrue(panel.countChangedLinesOfRelevantStops() >= coverage.size());
             panel.toggleChecked(firstStop);
+            // checked stops count as viewed
+            assertEquals(ReviewCoverage.State.OK, panel.coverageOfRelevantStops().get(0).getState());
             assertSame(StopIcons.checkMark(), panel.icons().forStop(firstStop));
             // checked stops do not count as "not visited" when the review is ended
             assertEquals(notVisited - 1, panel.countRelevantStopsNotFullyVisited());
@@ -638,6 +649,13 @@ public class ReviewToolUiSmokeTest extends BasePlatformTestCase {
                         diffActions != null && diffActions.get(0) instanceof CortActions.AddRemark);
             }
             this.checkAiSuggestionsAndRisks(panel, tours, calculatorFile);
+            // the diffs of all stops can be described for the AI (also the one of the new file Main.java)
+            for (final Tour tour : tours.getTopmostTours()) {
+                for (final Stop stop : tour.getStops()) {
+                    final String diff = StopDiffViewer.load(stop).unifiedDiff();
+                    assertTrue(stop + ": " + diff, diff.startsWith("@@ "));
+                }
+            }
 
             // marking the selected stop as checked keeps it selected, navigating selects the new stop
             assertSame(shown, panel.getSelectedStop());

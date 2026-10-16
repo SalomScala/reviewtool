@@ -355,7 +355,7 @@ public final class ReviewToursPanel extends JPanel {
         }
         final ReviewAiPrompts.StopRisk risk = this.getAiRisk(stop);
         if (risk != null) {
-            sb.append(" &nbsp;&middot; AI: ").append(risk.getRisk()).append(" risk");
+            sb.append(" &nbsp;&middot; AI hint (unchecked): ").append(risk.getRisk()).append(" risk");
             if (!risk.getReason().isEmpty()) {
                 sb.append(" (").append(escape(risk.getReason())).append(')');
             }
@@ -588,6 +588,69 @@ public final class ReviewToursPanel extends JPanel {
         return this.countStops((s) -> !this.isIrrelevant(s) && !this.isLookedAt(s));
     }
 
+    /**
+     * Returns the view state of the relevant stops in the order of the review (empty if there are no tours).
+     */
+    List<ReviewCoverage.StopCoverage> coverageOfRelevantStops() {
+        final List<ReviewCoverage.StopCoverage> result = new ArrayList<>();
+        if (this.tours == null) {
+            return result;
+        }
+        for (final Tour tour : this.tours.getTopmostTours()) {
+            for (final Stop stop : tour.getStops()) {
+                if (!this.isIrrelevant(stop)) {
+                    result.add(new ReviewCoverage.StopCoverage(shortDescription(stop), this.coverageState(stop)));
+                }
+            }
+        }
+        return result;
+    }
+
+    private ReviewCoverage.State coverageState(Stop stop) {
+        if (this.isChecked(stop)) {
+            return ReviewCoverage.State.OK;
+        }
+        final ViewStatDataForStop ratio = this.statistics.determineViewRatio(stop, LONG_ENOUGH_VIEW_COUNT);
+        if (ratio.isNotViewedAtAll()) {
+            return ReviewCoverage.State.NOT_VIEWED;
+        } else if (ratio.isPartlyUnvisited()) {
+            return ReviewCoverage.State.PARTLY_VIEWED;
+        }
+        // the view counts are seconds: no line of the stop has been shown long enough
+        final ViewStatDataForStop seconds =
+                this.statistics.determineViewRatio(stop, ReviewCoverage.BRIEF_VIEW_SECONDS);
+        return seconds.getMaxRatio() < 1.0 ? ReviewCoverage.State.BRIEFLY_VIEWED : ReviewCoverage.State.OK;
+    }
+
+    private static String shortDescription(Stop stop) {
+        final String fileName = stop.getAbsoluteFile().getName();
+        if (!stop.isDetailedFragmentKnown()) {
+            return fileName;
+        }
+        final IFragment fragment = stop.getMostRecentFragment();
+        final int from = fragment.getFrom().getLine();
+        final int to = fragment.getTo().getLine();
+        return fileName + ":" + (from == to ? Integer.toString(from) : from + "-" + to);
+    }
+
+    /**
+     * Returns the number of changed lines (in the current version) of the relevant stops.
+     */
+    int countChangedLinesOfRelevantStops() {
+        int lines = 0;
+        if (this.tours != null) {
+            for (final Tour tour : this.tours.getTopmostTours()) {
+                for (final Stop stop : tour.getStops()) {
+                    if (!this.isIrrelevant(stop) && stop.isDetailedFragmentKnown()) {
+                        final IFragment fragment = stop.getMostRecentFragment();
+                        lines += Math.max(1, fragment.getTo().getLine() - fragment.getFrom().getLine() + 1);
+                    }
+                }
+            }
+        }
+        return lines;
+    }
+
     private int countStops(Predicate<Stop> predicate) {
         int count = 0;
         if (this.tours != null) {
@@ -637,8 +700,12 @@ public final class ReviewToursPanel extends JPanel {
         this.progressBar.setCounts(irrelevant, visited, partlyVisited, unvisited);
         final Tour active = this.tours.getActiveTour();
         final int tourCount = this.tours.getTopmostTours().size();
+        final int changedLines = this.countChangedLinesOfRelevantStops();
         this.statusLabel.setText(tourCount + (tourCount == 1 ? " tour, " : " tours, ") + stopCount
-                + (stopCount == 1 ? " stop" : " stops") + ", active tour: " + (active == null ? "-" : firstLine(active.getDescription())));
+                + (stopCount == 1 ? " stop" : " stops") + " (" + changedLines
+                + (changedLines == 1 ? " changed line" : " changed lines")
+                + (changedLines >= ReviewCoverage.LARGE_REVIEW_LINES ? " - a large review" : "")
+                + "), active tour: " + (active == null ? "-" : firstLine(active.getDescription())));
     }
 
     private boolean isIrrelevant(Stop stop) {
@@ -1036,7 +1103,8 @@ public final class ReviewToursPanel extends JPanel {
                             risk.isHigh() ? HIGH_RISK_ATTRIBUTES : MEDIUM_RISK_ATTRIBUTES);
                 }
                 this.setToolTipText(risk == null ? stop.getAbsoluteFile().getPath()
-                        : "<html>" + escape(stop.getAbsoluteFile().getPath()) + "<br>AI: " + risk.getRisk() + " risk"
+                        : "<html>" + escape(stop.getAbsoluteFile().getPath()) + "<br>AI hint (unchecked): "
+                        + risk.getRisk() + " risk"
                         + (risk.getReason().isEmpty() ? "" : " - " + escape(risk.getReason())) + "</html>");
             }
         }
