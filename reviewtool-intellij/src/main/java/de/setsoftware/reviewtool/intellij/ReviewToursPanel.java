@@ -573,6 +573,21 @@ public final class ReviewToursPanel extends JPanel {
         return this.countStops((s) -> !this.isIrrelevant(s) && !this.isChecked(s) && !this.isFullyVisited(s));
     }
 
+    /**
+     * True iff the reviewer has looked at the stop: viewed it at least partly or marked it as checked.
+     */
+    boolean isLookedAt(Stop stop) {
+        return this.isChecked(stop)
+                || !this.statistics.determineViewRatio(stop, LONG_ENOUGH_VIEW_COUNT).isNotViewedAtAll();
+    }
+
+    /**
+     * Returns the number of relevant stops the reviewer has not looked at yet (0 if there are no tours).
+     */
+    int countRelevantStopsNotLookedAt() {
+        return this.countStops((s) -> !this.isIrrelevant(s) && !this.isLookedAt(s));
+    }
+
     private int countStops(Predicate<Stop> predicate) {
         int count = 0;
         if (this.tours != null) {

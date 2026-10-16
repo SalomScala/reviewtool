@@ -4,9 +4,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 import com.eclipsesource.json.JsonArray;
@@ -59,6 +61,13 @@ final class ReviewAiPrompts {
             return this.lines;
         }
 
+        /**
+         * Returns the same description of the stop with the given diff.
+         */
+        StopForAi withDiff(String newDiff) {
+            return new StopForAi(this.number, this.tour, this.path, this.lines, this.classification, newDiff);
+        }
+
         String describe() {
             return "Stop " + this.number + ": " + this.path + (this.lines == null ? "" : ", lines " + this.lines);
         }
@@ -95,13 +104,15 @@ final class ReviewAiPrompts {
         private final String kind;
         private final String text;
         private final String reason;
+        private final String importance;
 
-        RemarkSuggestion(int stop, int line, String kind, String text, String reason) {
+        RemarkSuggestion(int stop, int line, String kind, String text, String reason, String importance) {
             this.stop = stop;
             this.line = line;
             this.kind = kind;
             this.text = text;
             this.reason = reason;
+            this.importance = importance;
         }
 
         int getStop() {
@@ -128,6 +139,54 @@ final class ReviewAiPrompts {
 
         String getReason() {
             return this.reason;
+        }
+
+        /**
+         * One of {@link ReviewAiPrompts#IMPORTANCE_LEVELS} ("low" for minor remarks, e.g. on style).
+         */
+        String getImportance() {
+            return this.importance;
+        }
+
+        boolean isMinor() {
+            return "low".equals(this.importance);
+        }
+    }
+
+    /**
+     * The remark suggestions that are shown, after the ones that are probably not worth the reviewer's
+     * time have been left out (see {@link ReviewAiPrompts#filterRemarks}).
+     */
+    static final class FilteredRemarks {
+        private final List<RemarkSuggestion> shown;
+        private final int notOnChangedLines;
+        private final int overLimit;
+
+        FilteredRemarks(List<RemarkSuggestion> shown, int notOnChangedLines, int overLimit) {
+            this.shown = shown;
+            this.notOnChangedLines = notOnChangedLines;
+            this.overLimit = overLimit;
+        }
+
+        /**
+         * The suggestions to show, the most important ones first.
+         */
+        List<RemarkSuggestion> getShown() {
+            return this.shown;
+        }
+
+        /**
+         * The number of suggestions left out because they are about lines that have not been changed.
+         */
+        int getNotOnChangedLines() {
+            return this.notOnChangedLines;
+        }
+
+        /**
+         * The number of (less important) suggestions left out because of the limits.
+         */
+        int getOverLimit() {
+            return this.overLimit;
         }
     }
 
@@ -274,6 +333,19 @@ final class ReviewAiPrompts {
     static final List<String> REMARK_KINDS = Collections.unmodifiableList(
             Arrays.asList("must", "can", "positive", "other"));
 
+    /** The importance of remark suggestions, from the highest to the lowest. */
+    static final List<String> IMPORTANCE_LEVELS = Collections.unmodifiableList(
+            Arrays.asList("high", "medium", "low"));
+
+    /** The maximum number of remark suggestions shown per stop. */
+    static final int MAX_SUGGESTIONS_PER_STOP = 3;
+    /** The maximum number of remark suggestions shown for an answer. */
+    static final int MAX_SUGGESTIONS = 8;
+
+    /** The project file with review guidelines for the AI (relative to the project directory). */
+    static final String GUIDELINES_FILE = ".cort/ai-review-guidelines.md";
+    private static final int MAX_GUIDELINES_CHARS = 4000;
+
     /** The risk levels, from the highest to the lowest. */
     static final List<String> RISK_LEVELS = Collections.unmodifiableList(
             Arrays.asList("high", "medium", "low"));
@@ -364,15 +436,29 @@ final class ReviewAiPrompts {
     static String remarksRequest() {
         return "Suggest review remarks for these changes: real problems the reviewer should report (bugs,"
                 + " missing error handling, security or concurrency issues, misleading names, missing tests)"
-                + " and, if deserved, positive feedback. Read the files if you need more context. Only suggest"
-                + " remarks you are confident about; no remarks on formatting or on code that has not been"
-                + " changed. Suggest at most 10 remarks; it is fine to suggest none.\n"
-                + "For each remark give the number of the stop, the line in the current version of the file"
-                + " (0 for the stop as a whole), the kind (\"must\": must be fixed, \"can\": could be improved,"
-                + " \"positive\": positive feedback, \"other\": e.g. a question), the text of the remark as the"
-                + " reviewer would write it to the author (one or two sentences) and a short reason for the"
-                + " reviewer.";
+                + " and, if deserved, positive feedback. Read the files if you need more context.\n"
+                + REMARK_RULES.replace("%MAX%", Integer.toString(MAX_SUGGESTIONS))
+                + "For each remark give the number of the stop, " + REMARK_FIELDS;
     }
+
+    /**
+     * Rules for remark suggestions: only few, important, actionable remarks on changed lines (the
+     * reviewer's time is better spent on own findings than on checking unhelpful suggestions).
+     */
+    private static final String REMARK_RULES =
+            "Only suggest remarks that pass this check: the remark is about a changed line (or the change as a"
+            + " whole), it is correct given the code you have read, and it says clearly what should be changed"
+            + " or why it matters. Leave out everything else, especially remarks on formatting, on code that"
+            + " has not been changed and vague advice. Prefer a few important remarks to many minor ones;"
+            + " suggest at most %MAX%. It is fine, and often right, to suggest none.\n";
+
+    private static final String REMARK_FIELDS =
+            "the line in the current version of the file (0 for the stop as a whole), the kind (\"must\": must"
+            + " be fixed, \"can\": could be improved, \"positive\": positive feedback, \"other\": e.g. a"
+            + " question), the importance (\"high\": probably a bug, a security problem or data loss,"
+            + " \"medium\": should be fixed or clearly improves the code, \"low\": minor, e.g. naming or"
+            + " style), the text of the remark as the reviewer would write it to the author (one or two"
+            + " sentences) and a short reason for the reviewer.";
 
     /**
      * The request for remark suggestions for one stop (to be answered in the format of
@@ -382,15 +468,24 @@ final class ReviewAiPrompts {
         return "Suggest review remarks for " + stop.describe() + " only: real problems the reviewer should report"
                 + " (bugs, missing error handling, security or concurrency issues, misleading names, missing tests)"
                 + " and, if deserved, positive feedback. Take the rest of the changes into account and read the"
-                + " files if you need more context, but only suggest remarks on this stop. Only suggest remarks you"
-                + " are confident about; no remarks on formatting or on code that has not been changed. Suggest at"
-                + " most 5 remarks; it is fine to suggest none.\n"
-                + "For each remark give the number of the stop (" + stop.getNumber() + "), the line in the current"
-                + " version of the file (0 for the stop as a whole), the kind (\"must\": must be fixed, \"can\":"
-                + " could be improved, \"positive\": positive feedback, \"other\": e.g. a question), the text of"
-                + " the remark as the reviewer would write it to the author (one or two sentences) and a short"
-                + " reason for the reviewer.\n\n"
-                + (stop.diff == null ? "(no textual diff)\n" : diffBlock(stop));
+                + " files if you need more context, but only suggest remarks on this stop.\n"
+                + REMARK_RULES.replace("%MAX%", Integer.toString(MAX_SUGGESTIONS_PER_STOP))
+                + "For each remark give the number of the stop (" + stop.getNumber() + "), " + REMARK_FIELDS
+                + "\n\n" + (stop.diff == null ? "(no textual diff)\n" : diffBlock(stop));
+    }
+
+    /**
+     * Adds the review guidelines of the project (see {@link #GUIDELINES_FILE}) to a request for remark
+     * suggestions. Long guidelines are shortened.
+     */
+    static String withGuidelines(String request, String guidelines) {
+        if (guidelines == null || guidelines.trim().isEmpty()) {
+            return request;
+        }
+        final String text = guidelines.trim();
+        return request + "\n\nThe review guidelines of the project (follow them when choosing and wording the"
+                + " remarks):\n" + (text.length() > MAX_GUIDELINES_CHARS
+                        ? text.substring(0, MAX_GUIDELINES_CHARS) + "\n(shortened)" : text);
     }
 
     static JsonObject remarksSchema() {
@@ -399,9 +494,10 @@ final class ReviewAiPrompts {
                         .add("stop", integer("The number of the stop"))
                         .add("line", integer("The line in the current version of the file, 0 for the whole stop"))
                         .add("kind", enumeration(REMARK_KINDS, "The kind of the remark"))
+                        .add("importance", enumeration(IMPORTANCE_LEVELS, "How important the remark is"))
                         .add("text", string("The remark for the author of the changes"))
                         .add("reason", string("Why the remark is suggested, for the reviewer")))
-                .add("required", strings("stop", "line", "kind", "text", "reason"));
+                .add("required", strings("stop", "line", "kind", "importance", "text", "reason"));
         return object()
                 .add("properties", new JsonObject().add("remarks", new JsonObject().add("type", "array")
                         .add("items", remark)))
@@ -419,11 +515,63 @@ final class ReviewAiPrompts {
             final String kind = stringValue(remark, "kind").toLowerCase(Locale.ROOT);
             final String text = stringValue(remark, "text").trim();
             if (stops.contains(stop) && REMARK_KINDS.contains(kind) && !text.isEmpty()) {
+                final String importance = stringValue(remark, "importance").toLowerCase(Locale.ROOT);
                 result.add(new RemarkSuggestion(stop, Math.max(0, intValue(remark, "line")), kind, text,
-                        stringValue(remark, "reason").trim()));
+                        stringValue(remark, "reason").trim(),
+                        IMPORTANCE_LEVELS.contains(importance) ? importance : "medium"));
             }
         }
         return result;
+    }
+
+    /**
+     * Leaves out the suggestions that are probably not worth the reviewer's time: suggestions for lines
+     * that have not been changed (more than one line away from the stop) and, beyond the limits per stop
+     * and in total, the less important ones. The result is sorted by importance (stable otherwise).
+     *
+     * @param linesOfStops The lines of the stops by their number (e.g. "24-28"; null if unknown).
+     */
+    static FilteredRemarks filterRemarks(List<RemarkSuggestion> remarks, Map<Integer, String> linesOfStops,
+            int maxPerStop, int maxTotal) {
+        final List<RemarkSuggestion> onChangedLines = new ArrayList<>();
+        int notOnChangedLines = 0;
+        for (final RemarkSuggestion remark : remarks) {
+            if (remark.getLine() > 0 && !isNear(remark.getLine(), linesOfStops.get(remark.getStop()))) {
+                notOnChangedLines++;
+            } else {
+                onChangedLines.add(remark);
+            }
+        }
+        onChangedLines.sort(Comparator.comparingInt(
+                (RemarkSuggestion r) -> IMPORTANCE_LEVELS.indexOf(r.getImportance())));
+        final List<RemarkSuggestion> shown = new ArrayList<>();
+        final Map<Integer, Integer> perStop = new HashMap<>();
+        for (final RemarkSuggestion remark : onChangedLines) {
+            final int count = perStop.getOrDefault(remark.getStop(), 0);
+            if (count < maxPerStop && shown.size() < maxTotal) {
+                shown.add(remark);
+                perStop.put(remark.getStop(), count + 1);
+            }
+        }
+        return new FilteredRemarks(shown, notOnChangedLines, onChangedLines.size() - shown.size());
+    }
+
+    /**
+     * True iff the line is in the given range of lines (e.g. "24-28" or "7") or next to it, or the
+     * range is unknown.
+     */
+    private static boolean isNear(int line, String lines) {
+        if (lines == null) {
+            return true;
+        }
+        try {
+            final int dash = lines.indexOf('-');
+            final int from = Integer.parseInt((dash < 0 ? lines : lines.substring(0, dash)).trim());
+            final int to = dash < 0 ? from : Integer.parseInt(lines.substring(dash + 1).trim());
+            return line >= from - 1 && line <= to + 1;
+        } catch (final NumberFormatException e) {
+            return true;
+        }
     }
 
     /**

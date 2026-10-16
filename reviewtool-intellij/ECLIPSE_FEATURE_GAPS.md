@@ -274,6 +274,28 @@ Elfte Runde (KI-Antworten über einen Neustart behalten, Vorschläge für einen 
 - **„Suggest Remarks with AI“** im Kontextmenü eines Stops: Vorschläge nur für diesen Stop (mit seinem Diff in der
   Anfrage, höchstens 5); Vorschläge des Modells zu anderen Stops werden verworfen und gezählt angezeigt.
 
+Zwölfte Runde (KI als Zweitmeinung nach dem eigenen Review; Grundlage: Literaturrecherche zu Code-Review-Studien):
+
+- **Erst das eigene Review:** Anmerkungsvorschläge gibt es standardmäßig erst, wenn der Reviewer den Stop angesehen
+  (oder als geprüft markiert) hat, für „Suggest Remarks“ alle relevanten Stops. Sonst erklärt der „AI“-Tab den Grund
+  und bietet „Ask the AI anyway“ an; abschaltbar in den Einstellungen. Hintergrund: Im kontrollierten Experiment von
+  Tufano et al. (ICSE 2025) sahen Reviewer mit vorab gezeigtem KI-Review weniger Code an (371 statt 484 Zeilen) und
+  fanden nicht mehr schwere Probleme; industrielle Einsätze berichten zusätzlichen Prüfaufwand und Übervertrauen.
+- **Weniger, wichtigere Vorschläge:** Der Prompt verlangt nur geprüfte, umsetzbare Anmerkungen zu geänderten Zeilen
+  (leere Antwort ausdrücklich erlaubt) mit Wichtigkeit (high/medium/low). CoRT verwirft zusätzlich Vorschläge zu nicht
+  geänderten Zeilen (mehr als eine Zeile neben dem Stop) und kürzt auf 3 pro Stop und 8 insgesamt (die wichtigsten
+  zuerst); kleine Vorschläge (Benennung, Stil) sind eingeklappt („Show“). Die verworfenen werden mit Grund gezählt.
+  Hintergrund: Erst Filter heben die Präzision industrieller Systeme von ca. 25 % auf 75 % (BitsAI-CR) bzw. die
+  Nützlichkeit von 54 % auf 80 % (AutoCommenter); ungefilterte Vorschläge erreichen ca. 8 % Annahme (RevMate).
+- **Projekt-Richtlinien:** `.cort/ai-review-guidelines.md` im Projekt wird (gekürzt auf 4000 Zeichen) an jede
+  Anfrage nach Anmerkungsvorschlägen angehängt.
+- **Annahmequote pro Modell:** Annehmen/Ablehnen wird lokal pro Modell und Art gezählt („Accept anyway“ nach
+  „Reject“ korrigiert die Zählung); die Einstellungen zeigen sie unter „Model“ (beim Standardmodell für das zuletzt
+  verwendete).
+- Beim Test gefunden und behoben: Nach „Continue review“ nummerierte die erste neue KI-Anfrage die Stops neu (z. B.
+  nachdem eine andere Tour aktiviert wurde), sodass „Stop 3“-Links in den wiederhergestellten Antworten auf falsche
+  Stops zeigen konnten. Die gespeicherte Nummerierung bleibt jetzt erhalten.
+
 ## Gefundene und behobene Fehler
 
 - **„Continue review“ fehlte nach einem Absturz** (beim Test der achten Runde gefunden): Das nicht beendete Ticket
