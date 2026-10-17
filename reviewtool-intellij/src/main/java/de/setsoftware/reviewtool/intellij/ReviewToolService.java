@@ -291,10 +291,13 @@ public final class ReviewToolService {
      * The stop ordering algorithm of the cognitive support. It groups and sorts the stops using the
      * relation matchers configured in the settings (by default the same ones the Eclipse UI uses when
      * nothing has been configured). This is the compute intensive clustering; it is run inside a cancelable
-     * background task and falls back to a faster mode for very large change sets.
+     * background task and falls back to a faster mode for very large change sets. Afterwards, the stops that
+     * are only refactorings (and optionally the tests) are moved to the front of their groups.
      */
     private IStopOrdering createStopOrdering() {
-        return new StopOrdering(StopOrderingSettings.createMatchers(this.getSettings().stopOrdering));
+        final SettingsState settings = this.getSettings();
+        return new StopContext.Ordering(new StopOrdering(StopOrderingSettings.createMatchers(settings.stopOrdering)),
+                this.project, settings.refactoringStopsFirst, settings.testStopsFirst);
     }
 
     /**

@@ -98,6 +98,30 @@ final class StopDiffViewer {
                     this.oldText, this.newText, this.changes, this.stopStart, this.stopEnd, CONTEXT_LINES);
         }
 
+        String getOldText() {
+            return this.oldText;
+        }
+
+        String getNewText() {
+            return this.newText;
+        }
+
+        /**
+         * The changes that belong to the stop (all changes of the file if the stop's lines are unknown;
+         * empty if the texts are too big to compare).
+         */
+        List<StopDiffExcerpt.Change> stopChanges() {
+            final List<StopDiffExcerpt.Change> ret = new ArrayList<>();
+            if (this.changes != null) {
+                for (final StopDiffExcerpt.Change c : this.changes) {
+                    if (this.stopStart < 0 || c.touchesNew(this.stopStart, this.stopEnd)) {
+                        ret.add(c);
+                    }
+                }
+            }
+            return ret;
+        }
+
         /**
          * The excerpt with only the stop's changes (null if it could not be determined, e.g. for a
          * stop that covers the whole file).

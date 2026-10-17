@@ -522,13 +522,18 @@ final class RefactoringDetector {
     }
 
     /**
-     * The share of the tokens of "part" (without braces) that are contained in "whole".
+     * The share of the names and numbers of "part" that are contained in "whole". Punctuation is left out:
+     * the call of an extracted method brings back tokens like "this", "." and "(".
      */
     private static double containment(Map<String, Integer> part, Map<String, Integer> whole) {
-        final Map<String, Integer> relevant = new HashMap<>(part);
-        relevant.remove("{");
-        relevant.remove("}");
+        final Map<String, Integer> relevant = new HashMap<>();
+        for (final Map.Entry<String, Integer> e : part.entrySet()) {
+            if (Character.isJavaIdentifierStart(e.getKey().charAt(0)) || Character.isDigit(e.getKey().charAt(0))) {
+                relevant.put(e.getKey(), e.getValue());
+            }
+        }
         relevant.remove("return");
+        relevant.remove("this");
         final int total = count(relevant);
         return total == 0 ? 0.0 : (double) intersection(relevant, whole) / total;
     }

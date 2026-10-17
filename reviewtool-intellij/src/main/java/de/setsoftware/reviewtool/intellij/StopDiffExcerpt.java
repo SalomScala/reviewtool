@@ -30,6 +30,26 @@ final class StopDiffExcerpt {
             this.newEnd = newEnd;
         }
 
+        /** The first changed line in the old text (0-based). */
+        int getOldStart() {
+            return this.oldStart;
+        }
+
+        /** The end of the changed lines in the old text (0-based, exclusive). */
+        int getOldEnd() {
+            return this.oldEnd;
+        }
+
+        /** The first changed line in the new text (0-based). */
+        int getNewStart() {
+            return this.newStart;
+        }
+
+        /** The end of the changed lines in the new text (0-based, exclusive). */
+        int getNewEnd() {
+            return this.newEnd;
+        }
+
         /**
          * Returns true iff the change touches the given range of lines (0-based, end exclusive) in the
          * new text. Pure deletions (empty range in the new text) belong to a stop that is adjacent.

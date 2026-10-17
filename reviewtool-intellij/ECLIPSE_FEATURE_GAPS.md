@@ -337,6 +337,36 @@ Vierzehnte Runde (Folgerunden und Begründung; Grundlage: Literaturrecherche):
   markiert, die erledigte Javadoc-Anmerkung zeigt „code changed nearby“, die offene Stream-Anmerkung „code changed
   nearby - fixed?“, der „Summary“-Tab die Beschreibung und beide Commits, und die KI-Anfrage enthält beides.
 
+Fünfzehnte Runde (Kontext der Stops, Tests, Refactorings; Grundlage: Literaturrecherche, Punkte 8, 10 und 12):
+
+- **Analyse der Stops** (`StopAnalysis`, `StopContext`): Nach dem Erstellen der Tours werden die Stops im Hintergrund
+  analysiert, mit JavaParser auf den Texten der Dateien (ohne den Java-Index der IDE, das Plugin hängt weiter nur von
+  der Plattform ab). Bestimmt werden die geänderten Deklarationen, die Aufrufe zwischen den Stops (nach Namen, also
+  eine Heuristik), die Tests (Testquellordner der IDE oder Pfad/Name wie `src/test/`, `…Test`) und die Refactorings
+  pro Tour (mit dem vorhandenen `RefactoringDetector`).
+- **Kontext in den Stop-Details** (Punkt 8, Baums Prinzip 6 „warum steht der Stop hier“; Pascarella et al., CSCW 2018:
+  wie geänderte Methoden verwendet werden, ist ein Kern-Informationsbedarf): „Changes“, „Calls“, „Called from“,
+  „Tested by“/„Tests“ und „Tests outside of this review“ (unveränderte Tests im Projekt, die die geänderten Typen
+  erwähnen, über den Wortindex der Plattform) bzw. „no test uses …“. Stops und Dateien sind Links.
+- **Tests und Produktionscode** (Punkt 10; Spadini et al., ICSE 2018: Tests werden etwa halb so oft diskutiert):
+  Test-Stops sind im Baum markiert, die Statuszeile zählt besuchte Test-Stops getrennt, und der „Summary“-Tab hat eine
+  Gruppe „Tests“ mit den geänderten Tests und den geänderten Produktionsdateien ohne geänderten Test. Optional
+  („Tests before the production code“ in den Einstellungen) kommen die Tests in ihrer Gruppe zuerst.
+- **Refactorings verdichten** (Punkt 12; RAID, Brito & Valente, ICPC 2021: zu prüfende Zeilen 14,5 → 2 bei
+  Verschiebungen): Ein Stop, dessen geänderte Zeilen sich vollständig durch eine erkannte Umbenennung erklären (alte
+  Namen durch neue ersetzt ergibt die neuen Zeilen), heißt „refactoring only“ und nennt das Refactoring; ein Stop mit
+  einer extrahierten Methode zeigt „Part of a refactoring: Extract method …“. Standardmäßig kommen reine
+  Refactoring-Stops in ihrer Gruppe zuerst (`StopContext.Ordering` um die Sortierung des Cores; die Gruppen bleiben
+  zusammen), und sie zählen beim Beenden des Reviews nicht als „nur kurz angesehen“. Einen echten Rest-Diff (Diff
+  ohne die Umbenennung) gibt es noch nicht.
+- Beim Test gefunden und behoben: Die Erkennung extrahierter Methoden verfehlte DEMO-5 („Extract sum“) knapp
+  (Überdeckung 0,73 statt 0,75), weil der Aufruf `this.sum()` Tokens wie `this`, `.` und `(` zurückbringt. Die
+  Überdeckung wird jetzt nur über Namen und Zahlen berechnet.
+- In 2026.2.3 durchgespielt: DEMO-3 (Umbenennung `multiply` → `times`: beide Stops „refactoring only“, der
+  Aufruf-Stop vor der Whitespace-Änderung, Links zwischen Deklaration und Aufruf, unveränderter `CalculatorTest`
+  gefunden), DEMO-5 (Extract method erkannt, `StatisticsTest` mit `Statistics` verknüpft und mit der Einstellung zuerst,
+  Statuszeile „visited: 0/1 test stops, 0/7 others“, Gruppe „Tests“ im „Summary“-Tab).
+
 ## Gefundene und behobene Fehler
 
 - **„Continue review“ fehlte nach einem Absturz** (beim Test der achten Runde gefunden): Das nicht beendete Ticket
