@@ -380,7 +380,25 @@ public final class ReviewToursPanel extends JPanel {
             this.contextLinks(sb, "Tested by", info.getTests());
             this.testsOutsideReview(sb, context, info);
         }
+        for (final SecurityHints.Hint hint : this.securityHints(info)) {
+            contextLine(sb, "Security hint (unchecked), " + escape(hint.getTopic()), "<font color=\""
+                    + ColorUtil.toHtmlColor(MEDIUM_RISK_ATTRIBUTES.getFgColor()) + "\">Attack scenario: "
+                    + escape(hint.getScenario()) + "</font>");
+        }
+        final List<String> questions = context.checklistFor(stop);
+        if (!questions.isEmpty()) {
+            final StringBuilder list = new StringBuilder();
+            for (final String question : questions) {
+                list.append("<br>&#9744; ").append(escape(question));
+            }
+            contextLine(sb, "Checklist (" + escape(ReviewChecklist.FILE) + ")", list.toString());
+        }
         return sb.toString();
+    }
+
+    private List<SecurityHints.Hint> securityHints(StopAnalysis.Info info) {
+        return ReviewToolSettings.getInstance(this.project).getState().securityHints
+                ? info.getSecurityHints() : Collections.<SecurityHints.Hint>emptyList();
     }
 
     private static void contextLine(StringBuilder sb, String label, String html) {
@@ -1305,6 +1323,9 @@ public final class ReviewToursPanel extends JPanel {
                 }
                 if (info != null && info.isRefactoringOnly()) {
                     state.append(", refactoring only");
+                }
+                if (info != null && !ReviewToursPanel.this.securityHints(info).isEmpty()) {
+                    state.append(", security hint");
                 }
                 this.append(state.toString(), SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
                 final ReviewAiPrompts.StopRisk risk = ReviewToursPanel.this.getAiRisk(stop);

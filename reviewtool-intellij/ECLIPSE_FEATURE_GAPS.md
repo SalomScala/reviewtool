@@ -367,6 +367,37 @@ Fünfzehnte Runde (Kontext der Stops, Tests, Refactorings; Grundlage: Literaturr
   gefunden), DEMO-5 (Extract method erkannt, `StatisticsTest` mit `Statistics` verknüpft und mit der Einstellung zuerst,
   Statuszeile „visited: 0/1 test stops, 0/7 others“, Gruppe „Tests“ im „Summary“-Tab).
 
+Sechzehnte Runde (unabhängige Teile, Prüfhinweise, Reihenfolge; Grundlage: Literaturrecherche, Punkte 9, 11 und 13):
+
+- **Unabhängige Teile** (Punkt 9; über 40 % der Changesets bei Microsoft zerlegbar, Barnett et al., ICSE 2015;
+  Korrektheit 7,94 → 9,40 mit zerlegten Änderungen, Tao & Kim, MSR 2015; weniger fälschlich gemeldete Probleme,
+  Di Biase et al., PeerJ CS 2019): `StopAnalysis` ordnet jeden Stop einem Teil zu (Union-Find über dieselbe Datei,
+  Aufrufe, Test-Verknüpfungen und gemeinsame Refactorings). Beim Erstellen der Tours gibt es die neue Struktur „one
+  tour per independent part of the changes“ (`IndependentPartsRestructuring`, nach dem Zusammenführen pro Dateiteil):
+  eine Tour pro Teil, der größte zuerst, und die trivialen Teile (nur Refactorings und automatisch klassifizierte
+  Änderungen wie Formatierung oder Imports) eingeklappt in einer letzten Tour „Small changes“. Der „Summary“-Tab
+  zeigt die Teile als Gruppe „Independent parts“, wenn es mehrere gibt. Ein KI-Label pro Teil gibt es noch nicht.
+- **Sicherheitshinweise** (Punkt 11; ein explizites Angriffsszenario half deutlich, fehlende Eingabevalidierung zu
+  finden, Braz et al., ICSE 2021): `SecurityHints` erkennt riskante APIs in den hinzugefügten Zeilen (SQL per
+  Verkettung, Kommandoausführung, Eingaben aus Requests, zusammengesetzte Dateipfade, Deserialisierung, XML-Parser
+  ohne Schutz vor externen Entitäten, schwache Kryptographie, Geheimnisse im Code) und zeigt in den Stop-Details
+  ein Angriffsszenario („Security hint (unchecked)“, im Baum „security hint“). Abschaltbar unter „Review Hints“.
+- **Checklisten pro Pfadmuster** (Punkt 11; einfache Checklisten halfen bei komplexen Aufgaben, Wurzel Gonçalves et
+  al., EMSE 2022): `.cort/review-checklist.md` mit Überschriften aus Glob-Mustern und den Fragen als Liste
+  (`ReviewChecklist`); die passenden Fragen stehen in den Stop-Details.
+- **Wählbare Reihenfolge** (Punkt 13; 44,6 % der PRs werden nicht in der vorgegebenen Reihenfolge reviewt, Bouraffa
+  2025): nach den Refactorings (und optional den Tests) innerhalb der Gruppen nach Relationen (Standard), größte
+  Änderungen zuerst, nächste zum Ticket zuerst (gemeinsame Wörter aus Zusammenfassung und Beschreibung des Tickets
+  und den geänderten Zeilen) oder nach Dateiname. Die Gruppen bleiben zusammen.
+- Beim Test gefunden und behoben: Aufrufe werden nur über den Namen zugeordnet, und `values.add(...)` in einer neuen
+  Klasse galt als Aufruf von `Calculator.add` (dessen Zeile eine Whitespace-Änderung hatte). Dadurch landeten zwei
+  unabhängige Teile in einer Tour. Ein Aufruf aus einer anderen Datei zählt jetzt nur, wenn diese Datei den Typ der
+  Deklaration erwähnt. Die Teile waren außerdem nach dem ersten Stop sortiert (README zuerst), jetzt nach Größe.
+- In 2026.2.3 mit DEMO-5 und einem zusätzlichen Commit (`ValuesFile` liest Werte aus `new File(dir + "/" + name)`)
+  durchgespielt: vier Touren (Statistics/StatisticsTest/Main, ValuesFile, README, „Small changes“ mit der
+  Whitespace-Änderung in Calculator), Sicherheitshinweis „File path“ und Checklistenfrage für `**/io/**` bei
+  ValuesFile, „Largest changes first“ sortiert innerhalb der Gruppen, Gruppe „Independent parts“ im „Summary“-Tab.
+
 ## Gefundene und behobene Fehler
 
 - **„Continue review“ fehlte nach einem Absturz** (beim Test der achten Runde gefunden): Das nicht beendete Ticket

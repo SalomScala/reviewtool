@@ -41,6 +41,7 @@ import com.intellij.util.ui.tree.TreeUtil;
 
 import de.setsoftware.reviewtool.intellij.ChangeSummaryGenerator.FileItem;
 import de.setsoftware.reviewtool.intellij.ChangeSummaryGenerator.SummaryResult;
+import de.setsoftware.reviewtool.model.changestructure.Stop;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
 
 /**
@@ -62,7 +63,7 @@ public final class ReviewSummaryPanel extends JPanel {
      * Kinds of nodes in the summary tree (determine the icon and the text style).
      */
     private enum Kind {
-        OVERVIEW, GROUP, REFACTORING, FILE, PART
+        OVERVIEW, GROUP, REFACTORING, FILE, PART, CHANGE_PART
     }
 
     /**
@@ -296,6 +297,7 @@ public final class ReviewSummaryPanel extends JPanel {
                 }
                 this.treeRoot.add(refactorings);
             }
+            this.addPartsOverview();
             this.addTestOverview();
             for (final FileItem file : result.getFiles()) {
                 final String counts = file.isBinary()
@@ -312,6 +314,38 @@ public final class ReviewSummaryPanel extends JPanel {
         }
         this.treeModel.reload();
         TreeUtil.expandAll(this.tree);
+    }
+
+    /**
+     * Adds the "Independent parts" overview if the changes consist of several parts that are not connected by
+     * their files, calls, tests or refactorings (see {@link StopAnalysis.Info#getPart()}).
+     */
+    private void addPartsOverview() {
+        final StopContext context = this.stopContext;
+        if (context == null || context.getTours() != this.tours) {
+            return;
+        }
+        final List<StopContext.Part> parts = context.parts();
+        if (parts.size() < 2) {
+            return;
+        }
+        int trivial = 0;
+        final DefaultMutableTreeNode group = new DefaultMutableTreeNode();
+        for (final StopContext.Part part : parts) {
+            if (part.isTrivial()) {
+                trivial++;
+            }
+            final Stop first = part.getStops().get(0);
+            group.add(new DefaultMutableTreeNode(new SummaryNode(Kind.CHANGE_PART, part.describe(),
+                    "(" + part.getStops().size() + (part.getStops().size() == 1 ? " stop" : " stops")
+                    + (part.isTrivial() ? ", only refactorings/formatting/imports" : "") + ")",
+                    first.getAbsoluteFile().getPath(),
+                    first.isDetailedFragmentKnown() ? first.getMostRecentFragment().getFrom().getLine() : 0)));
+        }
+        group.setUserObject(new SummaryNode(Kind.GROUP, "Independent parts", "(" + parts.size() + " parts, "
+                + trivial + " of them trivial; \"one tour per independent part\" when creating the tours)",
+                null, 0));
+        this.treeRoot.add(group);
     }
 
     /**
@@ -424,6 +458,8 @@ public final class ReviewSummaryPanel extends JPanel {
                 return AllIcons.Nodes.Folder;
             case REFACTORING:
                 return AllIcons.Actions.Edit;
+            case CHANGE_PART:
+                return AllIcons.Nodes.Module;
             case FILE:
                 return FileTypeManager.getInstance().getFileTypeByFileName(node.label).getIcon();
             case PART:

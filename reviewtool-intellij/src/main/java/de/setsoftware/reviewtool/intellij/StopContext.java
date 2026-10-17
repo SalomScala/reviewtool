@@ -1,6 +1,11 @@
 package de.setsoftware.reviewtool.intellij;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -47,12 +52,49 @@ final class StopContext {
     private final Map<Stop, StopAnalysis.Info> infos;
     /** Type name -> the tests outside of the review that use it (absent if unknown). */
     private final Map<String, List<String>> testsOutsideReview;
+    private final ReviewChecklist checklist;
+    private final String projectDir;
 
     private StopContext(ToursInReview tours, Map<Stop, StopAnalysis.Info> infos,
-            Map<String, List<String>> testsOutsideReview) {
+            Map<String, List<String>> testsOutsideReview, ReviewChecklist checklist, String projectDir) {
         this.tours = tours;
         this.infos = infos;
         this.testsOutsideReview = testsOutsideReview;
+        this.checklist = checklist;
+        this.projectDir = projectDir;
+    }
+
+    /**
+     * The questions of the project's review checklist for the file of the stop (empty if there are none).
+     */
+    List<String> checklistFor(Stop stop) {
+        if (this.checklist == null || this.projectDir == null) {
+            return Collections.emptyList();
+        }
+        final String path = normalize(stop.getAbsoluteFile().getPath());
+        final String base = normalize(this.projectDir);
+        return this.checklist.questionsFor(path.startsWith(base + "/") ? path.substring(base.length() + 1) : path);
+    }
+
+    /**
+     * Reads the review checklist of the project, or returns null if there is none.
+     */
+    private static ReviewChecklist loadChecklist(String projectDir) {
+        if (projectDir == null) {
+            return null;
+        }
+        final Path file = Paths.get(projectDir, ReviewChecklist.FILE);
+        if (!Files.isRegularFile(file)) {
+            return null;
+        }
+        try {
+            final ReviewChecklist ret =
+                    ReviewChecklist.parse(new String(Files.readAllBytes(file), StandardCharsets.UTF_8));
+            return ret.isEmpty() ? null : ret;
+        } catch (final IOException e) {
+            Logger.warn("could not read the review checklist " + file, e);
+            return null;
+        }
     }
 
     ToursInReview getTours() {
@@ -127,6 +169,81 @@ final class StopContext {
     }
 
     /**
+     * An independent part of the changes (see {@link StopAnalysis.Info#getPart()}).
+     */
+    static final class Part {
+        private final List<Stop> stops = new ArrayList<>();
+        private final Set<String> names = new LinkedHashSet<>();
+        private boolean trivial = true;
+        private int changedLines;
+
+        List<Stop> getStops() {
+            return this.stops;
+        }
+
+        /** The names of the types (or files) of the part. */
+        Set<String> getNames() {
+            return this.names;
+        }
+
+        /**
+         * True if the part only consists of refactorings and changes that have been classified automatically
+         * (e.g. formatting, imports, binary files).
+         */
+        boolean isTrivial() {
+            return this.trivial;
+        }
+
+        /** The number of removed and added lines of the part. */
+        int getChangedLines() {
+            return this.changedLines;
+        }
+
+        /** The names, at most three, e.g. "Statistics, StatisticsTest, Main and 2 more". */
+        String describe() {
+            final List<String> list = new ArrayList<>(this.names);
+            if (list.size() <= 3) {
+                return String.join(", ", list);
+            }
+            return String.join(", ", list.subList(0, 3)) + " and " + (list.size() - 3) + " more";
+        }
+    }
+
+    /**
+     * Groups the given stops into their independent parts, in the order of the first stop of each part. Stops
+     * without an analysis (e.g. binary changes) form a part per file.
+     */
+    static List<Part> parts(List<Stop> stops, Map<Stop, StopAnalysis.Info> infos) {
+        final Map<String, Part> parts = new LinkedHashMap<>();
+        for (final Stop stop : stops) {
+            final StopAnalysis.Info info = infos.get(stop);
+            final String key = info == null ? "file:" + stop.getAbsoluteFile().getPath() : "part:" + info.getPart();
+            final Part part = parts.computeIfAbsent(key, (k) -> new Part());
+            part.stops.add(stop);
+            part.changedLines += info == null ? 0 : info.getChangedLineCount();
+            if (info != null && !info.getTypeNames().isEmpty()) {
+                part.names.addAll(info.getTypeNames());
+            } else {
+                part.names.add(stop.getAbsoluteFile().getName());
+            }
+            final boolean trivial = (info != null && info.isRefactoringOnly()) || stop.getClassification().length > 0;
+            part.trivial &= trivial;
+        }
+        return new ArrayList<>(parts.values());
+    }
+
+    /**
+     * The independent parts of the stops of the tours.
+     */
+    List<Part> parts() {
+        final List<Stop> stops = new ArrayList<>();
+        for (final Tour tour : this.tours.getTopmostTours()) {
+            stops.addAll(tour.getStops());
+        }
+        return parts(stops, this.infos);
+    }
+
+    /**
      * The tests per changed file (only files with Java types), in the order of the stops.
      */
     List<FileTests> testsPerFile() {
@@ -194,7 +311,7 @@ final class StopContext {
                 testsOutside.put(type, tests);
             }
         }
-        return new StopContext(tours, infos, testsOutside);
+        return new StopContext(tours, infos, testsOutside, loadChecklist(project.getBasePath()), project.getBasePath());
     }
 
     /**
@@ -274,28 +391,74 @@ final class StopContext {
     }
 
     /**
+     * The order of the stops (and groups of stops) within their group, after the stops that are only
+     * refactorings and (optionally) the tests. Reviewers order the files of a review in different ways, and many
+     * of them want to choose the order.
+     */
+    enum Order {
+        RELATIONS("Relations (as grouped, the default)"),
+        LARGEST_FIRST("Largest changes first"),
+        TICKET_FIRST("Closest to the ticket first (words of its summary and description)"),
+        FILE_NAME("By file name");
+
+        private final String label;
+
+        Order(String label) {
+            this.label = label;
+        }
+
+        @Override
+        public String toString() {
+            return this.label;
+        }
+
+        /**
+         * The order with the given name, or the default for an unknown name.
+         */
+        static Order parse(String name) {
+            for (final Order order : values()) {
+                if (order.name().equals(name)) {
+                    return order;
+                }
+            }
+            return RELATIONS;
+        }
+    }
+
+    /**
      * The stop ordering of the core, followed by moving the stops (and groups of stops) that are only
      * refactorings before the other stops of their group (they are easy to review and explain the following
-     * changes) and, optionally, the tests before the production code. The groups themselves stay together.
+     * changes), optionally the tests before the production code, and finally sorting by the chosen order.
+     * The groups themselves stay together.
      */
     static final class Ordering implements IStopOrdering {
         private final IStopOrdering inner;
         private final Project project;
         private final boolean refactoringsFirst;
         private final boolean testsFirst;
+        private final Order order;
+        private final Set<String> ticketWords;
 
-        Ordering(IStopOrdering inner, Project project, boolean refactoringsFirst, boolean testsFirst) {
+        /**
+         * @param ticketWords The words of the ticket (see {@link StopAnalysis#words}), for
+         *      {@link Order#TICKET_FIRST}.
+         */
+        Ordering(IStopOrdering inner, Project project, boolean refactoringsFirst, boolean testsFirst, Order order,
+                Set<String> ticketWords) {
             this.inner = inner;
             this.project = project;
             this.refactoringsFirst = refactoringsFirst;
             this.testsFirst = testsFirst;
+            this.order = order;
+            this.ticketWords = ticketWords;
         }
 
         @Override
         public List<? extends TourElement> groupAndSort(List<Stop> stops, TourCalculatorControl isCanceled,
                 Set<? extends IClassification> irrelevantCategories) throws InterruptedException {
             final List<? extends TourElement> sorted = this.inner.groupAndSort(stops, isCanceled, irrelevantCategories);
-            if ((!this.refactoringsFirst && !this.testsFirst) || isCanceled.isFastModeNeeded()) {
+            if ((!this.refactoringsFirst && !this.testsFirst && this.order == Order.RELATIONS)
+                    || isCanceled.isFastModeNeeded()) {
                 // a very large review already takes long: no further analysis for the order
                 return sorted;
             }
@@ -319,21 +482,66 @@ final class StopContext {
                     return 1;
                 }
                 return 2;
-            });
+            }, comparator(this.order, infos, this.ticketWords));
         }
     }
 
     /**
-     * Sorts the elements on each level by their rank (stable, so that the order of the elements with the
-     * same rank is kept). The rank of a group is the highest rank of its stops.
+     * Compares groups of stops (given as their stops) by the given order, or returns null for the order of
+     * the relations.
+     */
+    static Comparator<List<Stop>> comparator(Order order, Map<Stop, StopAnalysis.Info> infos,
+            Set<String> ticketWords) {
+        switch (order) {
+        case LARGEST_FIRST:
+            return Comparator.comparingInt((List<Stop> stops) -> {
+                int lines = 0;
+                for (final Stop stop : stops) {
+                    final StopAnalysis.Info info = infos.get(stop);
+                    lines += info == null ? 0 : info.getChangedLineCount();
+                }
+                return lines;
+            }).reversed();
+        case TICKET_FIRST:
+            return Comparator.comparingInt((List<Stop> stops) -> {
+                int best = 0;
+                for (final Stop stop : stops) {
+                    final StopAnalysis.Info info = infos.get(stop);
+                    if (info != null) {
+                        final Set<String> common = new HashSet<>(info.getWords());
+                        common.retainAll(ticketWords);
+                        best = Math.max(best, common.size());
+                    }
+                }
+                return best;
+            }).reversed();
+        case FILE_NAME:
+            return Comparator.comparing((List<Stop> stops) -> {
+                String first = null;
+                for (final Stop stop : stops) {
+                    final String path = stop.getAbsoluteFile().getPath();
+                    if (first == null || path.compareTo(first) < 0) {
+                        first = path;
+                    }
+                }
+                return first == null ? "" : first;
+            });
+        default:
+            return null;
+        }
+    }
+
+    /**
+     * Sorts the elements on each level by their rank and then by the given comparator, if any (stable, so
+     * that the order of equal elements is kept). The rank of a group is the highest rank of its stops.
      */
     static List<TourElement> reorder(List<? extends TourElement> elements,
-            ToIntFunction<Stop> rank) {
+            ToIntFunction<Stop> rank, Comparator<List<Stop>> within) {
         final List<TourElement> ret = new ArrayList<>();
         for (final TourElement e : elements) {
             if (e instanceof Tour) {
                 final Tour tour = (Tour) e;
-                ret.add(new Tour(tour.getDescription(), reorder(tour.getChildren(), rank)));
+                ret.add(new Tour(tour.getDescription(), reorder(tour.getChildren(), rank, within)));
             } else {
                 ret.add(e);
             }
@@ -346,7 +554,11 @@ final class StopContext {
             }
             ranks.put(e, max);
         }
-        ret.sort(Comparator.comparingInt(ranks::get));
+        Comparator<TourElement> comparator = Comparator.comparingInt(ranks::get);
+        if (within != null) {
+            comparator = comparator.thenComparing((a, b) -> within.compare(stopsOf(a), stopsOf(b)));
+        }
+        ret.sort(comparator);
         return ret;
     }
 

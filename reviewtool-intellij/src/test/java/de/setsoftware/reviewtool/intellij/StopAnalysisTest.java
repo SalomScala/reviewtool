@@ -182,6 +182,50 @@ public class StopAnalysisTest {
     }
 
     @Test
+    public void testCallsOfAnUnrelatedMethodWithTheSameNameAreNotLinked() {
+        final String valuesFile = "package demo.io;\n"
+                + "public class ValuesFile {\n"
+                + "    public static void read(java.util.List<Integer> values) {\n"
+                + "        values.add(1);\n"
+                + "    }\n"
+                + "}\n";
+        final Map<Object, StopAnalysis.Info> infos = StopAnalysis.analyze(Arrays.asList(
+                // "sum" in Calculator, and a "sum" call in a file that does not know Calculator
+                new StopAnalysis.Input("sum", 0, "/p/Calculator.java",
+                        CALCULATOR_OLD, CALCULATOR_NEW, changes(change(6, 6, 6, 10)), false),
+                new StopAnalysis.Input("values", 0, "/p/ValuesFile.java",
+                        "", valuesFile.replace("values.add(1)", "values.stream().mapToInt(i -> i).sum()"),
+                        changes(change(0, 0, 0, 6)), false)));
+        assertTrue(infos.get("values").getCalls().isEmpty());
+        assertTrue(infos.get("sum").getCalledBy().isEmpty());
+        assertEquals(1, infos.get("values").getPart());
+    }
+
+    @Test
+    public void testIndependentParts() {
+        final Map<Object, StopAnalysis.Info> infos = StopAnalysis.analyze(Arrays.asList(
+                new StopAnalysis.Input("rename", 0, "/p/Calculator.java",
+                        CALCULATOR_OLD, CALCULATOR_NEW, changes(change(3, 4, 3, 4)), false),
+                new StopAnalysis.Input("readme", 0, "/p/README.md",
+                        "", "# Demo\n", changes(change(0, 0, 0, 1)), false),
+                // connected to "rename" by the refactoring (and the call)
+                new StopAnalysis.Input("call", 0, "/p/Main.java",
+                        MAIN_OLD, MAIN_NEW, changes(change(5, 6, 5, 6)), false),
+                // the same file as "rename"
+                new StopAnalysis.Input("sum", 0, "/p/Calculator.java",
+                        CALCULATOR_OLD, CALCULATOR_NEW, changes(change(6, 6, 6, 10)), false)));
+        assertEquals(0, infos.get("rename").getPart());
+        assertEquals(1, infos.get("readme").getPart());
+        assertEquals(0, infos.get("call").getPart());
+        assertEquals(0, infos.get("sum").getPart());
+        assertEquals(2, infos.get("rename").getChangedLineCount());
+        assertEquals(4, infos.get("sum").getChangedLineCount());
+        assertTrue(infos.get("sum").getWords().containsAll(Arrays.asList("sum", "values", "stream", "calculator")));
+        assertEquals(new java.util.LinkedHashSet<>(Arrays.asList("customers", "sums", "statistics", "values")),
+                StopAnalysis.words("Customers need the sums: StatisticsValues and 42 more"));
+    }
+
+    @Test
     public void testTestNames() {
         assertEquals("Calculator", StopAnalysis.testedName("CalculatorTest"));
         assertEquals("Calculator", StopAnalysis.testedName("CalculatorTests"));

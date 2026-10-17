@@ -2,12 +2,14 @@ package de.setsoftware.reviewtool.intellij;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -105,9 +107,44 @@ final class StopAnalysis {
         private final List<Link> tested = new ArrayList<>();
         private final List<String> refactorings = new ArrayList<>();
         private boolean refactoringOnly;
+        private final String path;
+        private int changedLineCount;
+        private final Set<String> words = new HashSet<>();
+        private final List<SecurityHints.Hint> securityHints = new ArrayList<>();
+        private int part;
 
-        Info(boolean test) {
+        Info(boolean test, String path) {
             this.test = test;
+            this.path = path;
+        }
+
+        /** The path of the stop's file. */
+        String getPath() {
+            return this.path;
+        }
+
+        /** The number of removed and added lines of the stop. */
+        int getChangedLineCount() {
+            return this.changedLineCount;
+        }
+
+        /** The words (lower case parts of the names) in the changed lines and the file name. */
+        Set<String> getWords() {
+            return this.words;
+        }
+
+        /** The security hints for the added lines (see {@link SecurityHints}). */
+        List<SecurityHints.Hint> getSecurityHints() {
+            return this.securityHints;
+        }
+
+        /**
+         * The independent part of the changes the stop belongs to (0-based, in the order of the first stop of
+         * each part). Stops are in the same part if they are in the same file, call each other, test each other
+         * or belong to the same refactoring.
+         */
+        int getPart() {
+            return this.part;
         }
 
         /** True if the stop is in a test. */
@@ -159,6 +196,13 @@ final class StopAnalysis {
     private static final Pattern TOKEN = Pattern.compile("[A-Za-z_$][\\w$]*|\\d+|\\S");
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_$][\\w$]*");
     private static final Pattern TEST_NAME = Pattern.compile("^(.+?)Tests?$|^Test([A-Z].*)$");
+    private static final Pattern WORD_PART = Pattern.compile("[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\\d+");
+    private static final Set<String> STOP_WORDS = new HashSet<>(Arrays.asList(
+            "the", "and", "for", "with", "that", "this", "from", "into", "are", "has", "have", "not", "but",
+            "can", "should", "must", "will", "when", "then", "than", "all", "any", "new", "old", "add", "use",
+            "get", "set", "its", "our", "you", "was", "were", "been", "also", "only", "some", "more", "need",
+            "needs", "java", "string", "int", "long", "void", "public", "private", "final", "static", "return",
+            "class", "import", "package", "null", "true", "false"));
 
     /**
      * A method, constructor or type of a parsed file with its range of lines (1-based, inclusive).
@@ -180,6 +224,12 @@ final class StopAnalysis {
 
         boolean contains(int line) {
             return this.begin <= line && line <= this.end;
+        }
+
+        /** The (simple) name of the type that declares this method, or the type itself. */
+        String typeName() {
+            final int dot = this.display.lastIndexOf('.');
+            return this.type || dot < 0 ? this.name : this.display.substring(0, dot);
         }
     }
 
@@ -234,8 +284,15 @@ final class StopAnalysis {
         final Map<String, FileModel> models = new HashMap<>();
         final Map<Object, Set<Integer>> changedLines = new HashMap<>();
         for (final Input input : inputs) {
-            final Info info = new Info(input.test);
+            final Info info = new Info(input.test, input.path);
             ret.put(input.id, info);
+            final String oldChanged = changedText(input.oldText, input.changes, true);
+            final String newChanged = changedText(input.newText, input.changes, false);
+            for (final StopDiffExcerpt.Change c : input.changes) {
+                info.changedLineCount += c.getOldEnd() - c.getOldStart() + c.getNewEnd() - c.getNewStart();
+            }
+            info.words.addAll(words(oldChanged + '\n' + newChanged + '\n' + baseName(input.path)));
+            info.securityHints.addAll(SecurityHints.find(newChanged));
             final FileModel model = models.computeIfAbsent(input.path + '\n' + input.newText,
                     (k) -> parse(input.path, input.newText));
             info.typeNames.addAll(model.typeNames);
@@ -255,7 +312,101 @@ final class StopAnalysis {
         linkCalls(inputs, ret, models, changedLines);
         linkTests(inputs, ret, models);
         detectRefactorings(inputs, ret);
+        assignParts(inputs, ret);
         return ret;
+    }
+
+    /**
+     * The changed lines of the old or the new text.
+     */
+    private static String changedText(String text, List<StopDiffExcerpt.Change> changes, boolean old) {
+        final String[] lines = lines(text);
+        final StringBuilder ret = new StringBuilder();
+        for (final StopDiffExcerpt.Change c : changes) {
+            final int from = old ? c.getOldStart() : c.getNewStart();
+            final int to = old ? c.getOldEnd() : c.getNewEnd();
+            for (int i = from; i < to && i < lines.length; i++) {
+                ret.append(lines[i]).append('\n');
+            }
+        }
+        return ret.toString();
+    }
+
+    /**
+     * The words in the given text: the parts of the names ("sumOfValues" -> "sum", "values"), in lower case,
+     * with at least three letters and without very common words.
+     */
+    static Set<String> words(String text) {
+        final Set<String> ret = new LinkedHashSet<>();
+        final Matcher m = WORD_PART.matcher(text);
+        while (m.find()) {
+            final String word = m.group().toLowerCase(Locale.ROOT);
+            if (word.length() >= 3 && !STOP_WORDS.contains(word) && !Character.isDigit(word.charAt(0))) {
+                ret.add(word);
+            }
+        }
+        return ret;
+    }
+
+    /**
+     * Groups the stops into independent parts (connected by file, calls, tests and refactorings).
+     */
+    private static void assignParts(List<Input> inputs, Map<Object, Info> infos) {
+        final Map<Object, Integer> index = new HashMap<>();
+        for (int i = 0; i < inputs.size(); i++) {
+            index.put(inputs.get(i).id, i);
+        }
+        final int[] parent = new int[inputs.size()];
+        for (int i = 0; i < parent.length; i++) {
+            parent[i] = i;
+        }
+        final Map<String, Integer> firstWithKey = new HashMap<>();
+        for (int i = 0; i < inputs.size(); i++) {
+            final Info info = infos.get(inputs.get(i).id);
+            final List<String> keys = new ArrayList<>();
+            keys.add("file:" + inputs.get(i).path);
+            for (final String refactoring : info.refactorings) {
+                keys.add("refactoring:" + refactoring);
+            }
+            for (final String key : keys) {
+                final Integer other = firstWithKey.putIfAbsent(key, i);
+                if (other != null) {
+                    union(parent, i, other);
+                }
+            }
+            for (final List<Link> links : Arrays.asList(info.calls, info.calledBy, info.tests, info.tested)) {
+                for (final Link link : links) {
+                    final Integer other = index.get(link.target);
+                    if (other != null) {
+                        union(parent, i, other);
+                    }
+                }
+            }
+        }
+        final Map<Integer, Integer> partOfRoot = new HashMap<>();
+        for (int i = 0; i < inputs.size(); i++) {
+            final int root = find(parent, i);
+            final Integer part = partOfRoot.computeIfAbsent(root, (r) -> partOfRoot.size());
+            infos.get(inputs.get(i).id).part = part;
+        }
+    }
+
+    private static int find(int[] parent, int i) {
+        int cur = i;
+        while (parent[cur] != cur) {
+            parent[cur] = parent[parent[cur]];
+            cur = parent[cur];
+        }
+        return cur;
+    }
+
+    private static void union(int[] parent, int a, int b) {
+        final int rootA = find(parent, a);
+        final int rootB = find(parent, b);
+        if (rootA != rootB) {
+            // the earlier stop stays the root, so that the parts are numbered by their first stop
+            parent[Math.max(rootA, rootB)] = Math.min(rootA, rootB);
+        }
     }
 
     /**
@@ -348,13 +499,13 @@ final class StopAnalysis {
             for (final int line : changedLines.get(input.id)) {
                 final Declaration d = model.innermostAt(line);
                 if (d != null && !d.type && seen.add(d.display)) {
-                    add(changedByName, d, input.id);
+                    add(changedByName, d, input);
                 }
             }
             // a changed type: its constructors (calls by "new Type(...)")
             for (final Declaration d : model.declarations) {
                 if (d.type && changedLines.get(input.id).contains(d.begin) && seen.add(d.display)) {
-                    add(changedByName, d, input.id);
+                    add(changedByName, d, input);
                 }
             }
         }
@@ -368,9 +519,14 @@ final class StopAnalysis {
                 }
                 final Declaration from = model.innermostAt(call.line);
                 for (final Object[] target : changedByName.get(call.name)) {
-                    final Object targetId = target[0];
+                    final Input targetInput = (Input) target[0];
+                    final Object targetId = targetInput.id;
                     final Declaration d = (Declaration) target[1];
-                    if (targetId == caller.id || !linked.add(targetId + "\n" + d.display)) {
+                    // calls are matched by name: a call in another file only counts if that file mentions the type
+                    // (otherwise "values.add(...)" would call every changed method "add")
+                    final boolean typeKnown = caller.path.equals(targetInput.path)
+                            || model.identifiers.contains(d.typeName());
+                    if (targetId == caller.id || !typeKnown || !linked.add(targetId + "\n" + d.display)) {
                         continue;
                     }
                     infos.get(caller.id).calls.add(new Link(targetId, d.display));
@@ -381,8 +537,8 @@ final class StopAnalysis {
         }
     }
 
-    private static void add(Map<String, List<Object[]>> changedByName, Declaration d, Object id) {
-        changedByName.computeIfAbsent(d.name, (k) -> new ArrayList<>()).add(new Object[] {id, d});
+    private static void add(Map<String, List<Object[]>> changedByName, Declaration d, Input input) {
+        changedByName.computeIfAbsent(d.name, (k) -> new ArrayList<>()).add(new Object[] {input, d});
     }
 
     /**
@@ -485,24 +641,14 @@ final class StopAnalysis {
 
     private static void assignRefactorings(Input input, Info info,
             List<RefactoringDetector.Refactoring> refactorings) {
-        final String[] oldLines = lines(input.oldText);
-        final String[] newLines = lines(input.newText);
-        final StringBuilder oldChanged = new StringBuilder();
-        final StringBuilder newChanged = new StringBuilder();
         int from = Integer.MAX_VALUE;
         int to = Integer.MIN_VALUE;
         for (final StopDiffExcerpt.Change c : input.changes) {
-            for (int i = c.getOldStart(); i < c.getOldEnd() && i < oldLines.length; i++) {
-                oldChanged.append(oldLines[i]).append('\n');
-            }
-            for (int i = c.getNewStart(); i < c.getNewEnd() && i < newLines.length; i++) {
-                newChanged.append(newLines[i]).append('\n');
-            }
             from = Math.min(from, c.getNewStart() + 1);
             to = Math.max(to, c.getNewEnd());
         }
-        final List<String> oldTokens = tokens(oldChanged.toString());
-        final List<String> newTokens = tokens(newChanged.toString());
+        final List<String> oldTokens = tokens(changedText(input.oldText, input.changes, true));
+        final List<String> newTokens = tokens(changedText(input.newText, input.changes, false));
         final Set<String> assigned = new LinkedHashSet<>();
         final Map<String, String> renames = new HashMap<>();
         for (final RefactoringDetector.Refactoring r : refactorings) {

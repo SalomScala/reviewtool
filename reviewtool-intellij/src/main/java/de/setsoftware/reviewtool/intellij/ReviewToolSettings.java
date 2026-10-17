@@ -55,6 +55,10 @@ public final class ReviewToolSettings implements PersistentStateComponent<Review
         public boolean refactoringStopsFirst = true;
         /** True iff the tests come before the production code in their group. */
         public boolean testStopsFirst;
+        /** The order within the groups of stops, see {@link StopContext.Order}. */
+        public String stopOrderWithinGroups = "RELATIONS";
+        /** True iff the stop details show security hints (attack scenarios) for risky APIs. */
+        public boolean securityHints = true;
     }
 
     private static final CredentialAttributes TOKEN_ATTRIBUTES =
