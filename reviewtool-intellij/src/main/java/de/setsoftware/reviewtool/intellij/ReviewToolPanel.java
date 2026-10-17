@@ -19,6 +19,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
@@ -92,6 +94,7 @@ import de.setsoftware.reviewtool.model.api.ICommit;
 import de.setsoftware.reviewtool.model.api.IRevisionedFile;
 import de.setsoftware.reviewtool.model.api.PositionReference;
 import de.setsoftware.reviewtool.model.changestructure.Stop;
+import de.setsoftware.reviewtool.model.changestructure.Tour;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
 import de.setsoftware.reviewtool.model.changestructure.ToursInReview.ReviewRoundInfo;
 import de.setsoftware.reviewtool.model.remarks.DummyMarker;
@@ -122,6 +125,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     /** The ticket whose review/fixing was started and not finished yet (e.g. paused), per project. */
     private static final String UNFINISHED_TICKET_KEY = "de.setsoftware.reviewtool.unfinishedTicket";
     private static final String UNFINISHED_TICKET_FILE = "unfinished-ticket.txt";
+    private static final int MAX_DESCRIPTION_FOR_AI = 3000;
     /** Prefix for the backup of remarks that were changed but not saved to the ticket yet. */
     private static final String UNSAVED_REMARKS_PREFIX = "de.setsoftware.reviewtool.unsavedRemarks.";
     /** Suffix of the property with the remarks of the ticket the unsaved changes were based on. */
@@ -191,6 +195,10 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     private int lastOpenRemarkCount;
     /** False while the remarks of the shown ticket are loading or could not be loaded. */
     private boolean remarksLoaded = true;
+    /** The ticket whose description is {@link #ticketDescription}. */
+    private String descriptionKey;
+    /** The description of the ticket {@link #descriptionKey} (empty if it has none). */
+    private String ticketDescription;
     /** True if the remarks/information of the shown ticket could not be loaded. */
     private boolean ticketLoadFailed;
     /** The ticket (or {@link #NO_TICKET_KEY}) the tours in the "Tours" tab belong to, or null. */
@@ -243,6 +251,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         this.aiPanel.setRiskListener(this.toursPanel::setAiRisks);
         this.aiPanel.setRemarks(this::remarksOfEarlierRounds, (remark) -> this.remarksPanel.jumpToRemark(remark));
         this.aiPanel.setHistoryListener(this::saveAiAnswers);
+        this.aiPanel.setRationale(this::rationaleForAi);
         this.aiPanel.setReviewerProgress(this.toursPanel::isLookedAt, this.toursPanel::countRelevantStopsNotLookedAt);
         this.toursPanel.setProgressListener(this::progressChanged);
         this.progressSaveTimer = new Timer(3000, (e) -> this.saveProgress(false));
@@ -977,6 +986,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         final int request = this.detailsRequest.incrementAndGet();
         this.currentTicketKey = key;
         this.currentTicketInfo = null;
+        this.updateRationale();
         this.discardToursOfOtherTicket(key);
         this.updateCurrentTicketLabel();
         this.ticketTable.repaint();
@@ -1003,7 +1013,17 @@ public class ReviewToolPanel extends JPanel implements Disposable {
 
     private void loadRemarks(String key, int request) {
         try {
-            final ITicketData ticket = this.getService().createTicketConnector().loadTicket(key);
+            final YouTrackConnector connector = this.getService().createTicketConnector();
+            final ITicketData ticket = connector.loadTicket(key);
+            String description;
+            try {
+                description = ticket == null ? "" : connector.loadDescription(key);
+            } catch (final RuntimeException e) {
+                // the description is only shown to the reviewer, the remarks are still usable
+                Logger.warn("could not load the description of " + key, e);
+                description = "*(The description of the ticket could not be loaded.)*";
+            }
+            final String finalDescription = description;
             final String remarks = ticket == null ? "" : ticket.getReviewData();
             final TicketInfo info = ticket == null ? null : ticket.getTicketInfo();
             int round = 1;
@@ -1033,6 +1053,9 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                 this.currentTicketInfo = info;
                 this.currentRound = finalRound;
                 this.reviewRounds = rounds;
+                this.descriptionKey = key;
+                this.ticketDescription = finalDescription;
+                this.updateRationale();
                 this.updateCurrentTicketLabel();
                 this.ensureCurrentTicketListed();
                 this.updateRowKeepingHistory(info);
@@ -1067,6 +1090,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                 }
                 this.lastLoadedChanges = changes;
                 this.lastLoadedKey = key;
+                this.updateRationale();
                 this.treeModel.setRoot(newRoot);
                 TreeUtil.expandAll(this.commitTree);
                 if (changes.getMatchedCommits().isEmpty()) {
@@ -2030,20 +2054,66 @@ public class ReviewToolPanel extends JPanel implements Disposable {
             return false;
         }
         for (final Stop stop : tours.getStopsFor(new File(file.getPath()).getAbsoluteFile())) {
-            if (!stop.isDetailedFragmentKnown()) {
+            if (changesLineNear(stop, line)) {
                 return true;
             }
-            if (isNear(line, stop.getMostRecentFragment())) {
-                return true;
-            }
-            final Iterator<IRevisionedFile> revisions = stop.getHistory().keySet().iterator();
-            final IRevisionedFile oldest = revisions.hasNext() ? revisions.next() : null;
-            for (final IRevisionedFile revision : stop.getHistory().keySet()) {
-                for (final IHunk hunk : stop.getContentFor(revision)) {
-                    if (hunk.getSource().getFile().equals(oldest) && isNear(line, hunk.getSource())) {
-                        return true;
-                    }
+        }
+        return false;
+    }
+
+    /**
+     * Returns true iff the stop changes the given (1-based) line of its file or a line next to it, in the
+     * oldest version (before the reviewed commits) or in the current one.
+     */
+    private static boolean changesLineNear(Stop stop, int line) {
+        if (!stop.isDetailedFragmentKnown()) {
+            return true;
+        }
+        if (isNear(line, stop.getMostRecentFragment())) {
+            return true;
+        }
+        final Iterator<IRevisionedFile> revisions = stop.getHistory().keySet().iterator();
+        final IRevisionedFile oldest = revisions.hasNext() ? revisions.next() : null;
+        for (final IRevisionedFile revision : stop.getHistory().keySet()) {
+            for (final IHunk hunk : stop.getContentFor(revision)) {
+                if (hunk.getSource().getFile().equals(oldest) && isNear(line, hunk.getSource())) {
+                    return true;
                 }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Marks the stops of a later review round that do not belong to a remark of the earlier rounds (in
+     * the same file: at the remark's line or next to it, or anywhere for a remark on the whole file).
+     * Most changes made during a review are not requested by any remark; they deserve a full review.
+     */
+    private void updateUnrequestedStops() {
+        final ToursInReview tours = this.toursPanel.getTours();
+        final List<Pair<ReviewRemark, Integer>> earlier = this.remarksOfEarlierRounds();
+        if (tours == null || earlier.isEmpty() || this.isFixingMode()) {
+            this.toursPanel.setUnrequestedStops(null);
+            return;
+        }
+        final Set<Stop> unrequested = new HashSet<>();
+        for (final Tour tour : tours.getTopmostTours()) {
+            for (final Stop stop : tour.getStops()) {
+                if (!isRequestedByRemark(stop, earlier)) {
+                    unrequested.add(stop);
+                }
+            }
+        }
+        this.toursPanel.setUnrequestedStops(unrequested);
+    }
+
+    private static boolean isRequestedByRemark(Stop stop, List<Pair<ReviewRemark, Integer>> remarks) {
+        final String fileName = stop.getAbsoluteFile().getName();
+        for (final Pair<ReviewRemark, Integer> p : remarks) {
+            final Position pos = Position.parse(p.getFirst().getPositionString());
+            if (fileName.equals(pos.getShortFileName())
+                    && (pos.getLine() <= 0 || changesLineNear(stop, pos.getLine()))) {
+                return true;
             }
         }
         return false;
@@ -2072,6 +2142,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                 }
                 this.markerFactory.clearReviewMarkers();
                 final Map<ReviewRemark, Integer> rounds = this.roundsOfRemarks();
+                final Map<String, Boolean> changedNearby = new HashMap<>();
                 for (final ReviewRemark remark : remarks) {
                     final Position pos = Position.parse(remark.getPositionString());
                     final VirtualFile file = files.get(pos.getShortFileName());
@@ -2085,6 +2156,10 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                     final Integer round = rounds.get(remark);
                     final boolean changed = round != null && round < this.currentRound
                             && this.isChangedInTours(file, pos.getLine());
+                    if (round != null && round < this.currentRound && pos.getLine() > 0
+                            && this.toursPanel.getTours() != null) {
+                        changedNearby.put(ReviewRemarksPanel.key(remark), changed);
+                    }
                     final String lineText = ReviewRemarksPanel.typeLabel(remark)
                             + (warning ? "" : " (" + resolution + ")") + ": " + RemarkLinePainter.abbreviate(remark.getText())
                             + (changed ? "  \u00B7 code changed since review " + round : "");
@@ -2092,6 +2167,8 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                             RemarkActions.create(this.project, this.remarksModel, () -> remark, null),
                             new RemarkLinePainter.RemarkText(lineText, warning));
                 }
+                this.remarksPanel.setChangedNearby(changedNearby, this.isFixingMode());
+                this.updateUnrequestedStops();
             });
         });
     }
@@ -2155,6 +2232,63 @@ public class ReviewToolPanel extends JPanel implements Disposable {
     /**
      * The title of the review for the AI: the ticket key and summary (or the selected commits).
      */
+    /**
+     * Shows why the changes of the current ticket have been made (ticket, description and commit messages)
+     * in the "Summary" tab.
+     */
+    private void updateRationale() {
+        final String key = this.currentTicketKey;
+        if (key == null || key.isEmpty()) {
+            this.summaryPanel.setRationale(null, null, Collections.<String>emptyList());
+            return;
+        }
+        final TicketInfo info = this.currentTicketInfo;
+        this.summaryPanel.setRationale(info != null && info.getId().equals(key) ? key + " " + info.getSummary() : key,
+                key.equals(this.descriptionKey) ? this.ticketDescription : null, this.commitMessages(key));
+    }
+
+    /**
+     * The (first lines of the) messages of the loaded commits of the given ticket.
+     */
+    private List<String> commitMessages(String key) {
+        final List<String> ret = new ArrayList<>();
+        final IChangeData changes = this.lastLoadedChanges;
+        if (changes != null && key.equals(this.lastLoadedKey)) {
+            for (final ICommit commit : changes.getMatchedCommits()) {
+                final String message = commit.getMessage() == null ? "" : commit.getMessage().trim();
+                final int newline = message.indexOf('\n');
+                ret.add(newline < 0 ? message : message.substring(0, newline).trim());
+            }
+        }
+        return ret;
+    }
+
+    /**
+     * Why the changes under review have been made, for the AI: the description of the ticket and the
+     * commit messages (null if neither is known).
+     */
+    private String rationaleForAi() {
+        final String key = this.toursKey;
+        if (key == null) {
+            return null;
+        }
+        final StringBuilder sb = new StringBuilder();
+        final String description = key.equals(this.descriptionKey) ? this.ticketDescription : null;
+        if (description != null && !description.trim().isEmpty()) {
+            sb.append("Ticket description:\n").append(description.length() > MAX_DESCRIPTION_FOR_AI
+                    ? description.substring(0, MAX_DESCRIPTION_FOR_AI) + "\n(shortened)" : description.trim())
+                    .append("\n\n");
+        }
+        final List<String> commits = this.commitMessages(key);
+        if (!commits.isEmpty()) {
+            sb.append("Commit messages:\n");
+            for (final String message : commits) {
+                sb.append("- ").append(message).append('\n');
+            }
+        }
+        return sb.length() == 0 ? null : sb.toString().trim();
+    }
+
     private String reviewTitleForAi() {
         final TicketInfo info = this.currentTicketInfo;
         if (info != null && info.getId().equals(this.toursKey)) {

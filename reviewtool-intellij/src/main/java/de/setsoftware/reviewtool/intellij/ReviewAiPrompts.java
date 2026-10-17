@@ -377,8 +377,22 @@ final class ReviewAiPrompts {
      * Describes the changes of the review: one section per tour with the numbered stops and their diffs.
      */
     static Context reviewContext(String title, List<StopForAi> stops, int maxChars) {
+        return reviewContext(title, null, stops, maxChars);
+    }
+
+    /**
+     * Describes the changes of the review: why they have been made (if known), then one section per tour
+     * with the numbered stops and their diffs.
+     *
+     * @param rationale The ticket description and commit messages, or null if unknown.
+     */
+    static Context reviewContext(String title, String rationale, List<StopForAi> stops, int maxChars) {
         final StringBuilder sb = new StringBuilder();
         sb.append("# Changes to review: ").append(title).append("\n\n");
+        if (rationale != null && !rationale.trim().isEmpty()) {
+            sb.append("## Why the changes have been made (ticket and commits)\n\n").append(rationale.trim())
+                    .append("\n\n");
+        }
         int omitted = 0;
         String currentTour = null;
         for (final StopForAi stop : stops) {
@@ -413,8 +427,9 @@ final class ReviewAiPrompts {
      */
     static String summaryRequest() {
         return "Write an overview of these changes as a starting point for the review:\n"
-                + "1. The purpose of the changes (one or two sentences).\n"
-                + "2. The main changes, grouped by topic, with the numbers of the stops.\n"
+                + "1. Why: the purpose of the changes as stated in the ticket description and the commit messages"
+                + " (one or two sentences). If they do not state it, say so instead of guessing.\n"
+                + "2. What: the main changes, grouped by topic, with the numbers of the stops.\n"
                 + "3. The stops that deserve particular attention, with the reason (e.g. risk of bugs,"
                 + " security, concurrency, missing tests).\n"
                 + "Keep it under 300 words.";

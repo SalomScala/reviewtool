@@ -1,14 +1,18 @@
 package de.setsoftware.reviewtool.intellij;
 
 import java.awt.BorderLayout;
+import java.awt.Dimension;
 import java.awt.FlowLayout;
+import java.awt.Insets;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.util.List;
 
 import javax.swing.Icon;
 import javax.swing.JButton;
+import javax.swing.JEditorPane;
 import javax.swing.JPanel;
 import javax.swing.JTree;
 import javax.swing.tree.DefaultMutableTreeNode;
@@ -23,10 +27,12 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.ColoredTreeCellRenderer;
+import com.intellij.ui.JBColor;
 import com.intellij.ui.SimpleTextAttributes;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.treeStructure.Tree;
+import com.intellij.util.ui.HTMLEditorKitBuilder;
 import com.intellij.util.ui.JBUI;
 import com.intellij.util.ui.UIUtil;
 import com.intellij.util.ui.tree.TreeUtil;
@@ -46,6 +52,9 @@ import de.setsoftware.reviewtool.model.changestructure.ToursInReview;
 public final class ReviewSummaryPanel extends JPanel {
 
     private static final long serialVersionUID = 1L;
+
+    /** The maximal height of the rationale (unscaled), a longer description gets a scroll bar. */
+    private static final int MAX_RATIONALE_HEIGHT = 180;
 
     /**
      * Kinds of nodes in the summary tree (determine the icon and the text style).
@@ -95,6 +104,22 @@ public final class ReviewSummaryPanel extends JPanel {
 
     private transient ToursInReview tours;
     private transient Runnable aiSummaryListener;
+    /** Shows why the changes have been made: the ticket and its description, and the commit messages. */
+    private final JEditorPane rationalePane = new JEditorPane();
+    private final JBScrollPane rationaleScroll = new JBScrollPane(this.rationalePane) {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public Dimension getPreferredSize() {
+            // as high as the text (wrapped to the current width), but a long description gets a scroll bar
+            final Insets insets = this.getInsets();
+            final int width = Math.max(this.getWidth(), JBUI.scale(400)) - insets.left - insets.right;
+            ReviewSummaryPanel.this.rationalePane.setSize(width, Short.MAX_VALUE);
+            final int height = ReviewSummaryPanel.this.rationalePane.getPreferredSize().height
+                    + insets.top + insets.bottom;
+            return new Dimension(JBUI.scale(400), Math.min(height, JBUI.scale(MAX_RATIONALE_HEIGHT)));
+        }
+    };
 
     public ReviewSummaryPanel(Project project) {
         super(new BorderLayout());
@@ -120,7 +145,16 @@ public final class ReviewSummaryPanel extends JPanel {
         hint.setFontColor(UIUtil.FontColor.BRIGHTER);
         hint.setBorder(JBUI.Borders.emptyLeft(8));
         toolbar.add(hint);
-        this.add(toolbar, BorderLayout.NORTH);
+        this.rationalePane.setEditable(false);
+        this.rationalePane.setEditorKit(new HTMLEditorKitBuilder().withWordWrapViewFactory().build());
+        this.rationalePane.setBackground(UIUtil.getPanelBackground());
+        this.rationalePane.setBorder(JBUI.Borders.empty(2, 8, 6, 8));
+        this.rationaleScroll.setBorder(JBUI.Borders.customLineBottom(JBColor.border()));
+        this.rationaleScroll.setVisible(false);
+        final JPanel north = new JPanel(new BorderLayout());
+        north.add(toolbar, BorderLayout.NORTH);
+        north.add(this.rationaleScroll, BorderLayout.CENTER);
+        this.add(north, BorderLayout.NORTH);
 
         this.tree.setRootVisible(true);
         this.tree.setCellRenderer(new SummaryRenderer());
@@ -148,6 +182,63 @@ public final class ReviewSummaryPanel extends JPanel {
      */
     void setAiSummaryListener(Runnable listener) {
         this.aiSummaryListener = listener;
+    }
+
+    /**
+     * Shows why the changes have been made (the rationale is what reviewers miss most), or hides it.
+     *
+     * @param ticket The ticket (e.g. "DEMO-2 Add multiply and sum"), or null to hide the rationale.
+     * @param description The description of the ticket (Markdown), empty if it has none, or null if it
+     *      is unknown (e.g. not loaded yet).
+     * @param commitMessages The messages of the commits of the review.
+     */
+    void setRationale(String ticket, String description, List<String> commitMessages) {
+        if (ticket == null) {
+            this.rationaleScroll.setVisible(false);
+        } else {
+            this.rationalePane.setText(rationaleHtml(ticket, description, commitMessages));
+            this.rationalePane.setCaretPosition(0);
+            this.rationaleScroll.setVisible(true);
+        }
+        this.revalidate();
+    }
+
+    /**
+     * The HTML text of the rationale (package-private for tests).
+     */
+    static String rationaleHtml(String ticket, String description, List<String> commitMessages) {
+        final StringBuilder html = new StringBuilder("<html><body><b>Why: ")
+                .append(SimpleMarkdown.escape(ticket)).append("</b>");
+        if (description == null) {
+            html.append("<p class='hint'>Loading the ticket description...</p>");
+        } else if (description.trim().isEmpty()) {
+            html.append("<p><i>The ticket has no description, the reason for the changes is not stated. If it is"
+                    + " unclear, ask the author before judging the changes.</i></p>");
+        } else {
+            html.append(SimpleMarkdown.toHtml(description));
+        }
+        if (!commitMessages.isEmpty()) {
+            html.append("<p><b>Commits:</b></p><ul>");
+            for (final String message : commitMessages) {
+                html.append("<li>").append(SimpleMarkdown.escape(message.trim())).append("</li>");
+            }
+            html.append("</ul>");
+        }
+        return html.append("</body></html>").toString();
+    }
+
+    /**
+     * Returns the shown rationale text (for tests), or null if it is hidden.
+     */
+    String getShownRationale() {
+        if (!this.rationaleScroll.isVisible()) {
+            return null;
+        }
+        try {
+            return this.rationalePane.getDocument().getText(0, this.rationalePane.getDocument().getLength());
+        } catch (final javax.swing.text.BadLocationException e) {
+            return "";
+        }
     }
 
     /**

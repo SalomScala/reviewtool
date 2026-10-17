@@ -8,6 +8,7 @@ import java.awt.event.MouseEvent;
 import java.util.Collections;
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -155,6 +156,12 @@ public final class ReviewRemarksPanel extends JPanel {
     private final DefaultTreeModel treeModel = new DefaultTreeModel(this.treeRoot);
     private final Tree tree = new Tree(this.treeModel);
     private final JBLabel statusLabel = new JBLabel();
+    /**
+     * For the remarks of earlier review rounds (by {@link #key}): whether the reviewed changes change their
+     * code (at their line or next to it). Remarks without an entry are not checked.
+     */
+    private Map<String, Boolean> changedNearby = new HashMap<>();
+    private boolean fixingMode;
     private final EditorNotificationPanel syntaxErrorBanner =
             new EditorNotificationPanel(EditorNotificationPanel.Status.Error);
 
@@ -471,6 +478,44 @@ public final class ReviewRemarksPanel extends JPanel {
         return nl < 0 ? s : s.substring(0, nl);
     }
 
+    /**
+     * Identifies a remark independently of the object (the remarks are parsed again after each change).
+     */
+    static String key(ReviewRemark remark) {
+        return remark.getPositionString() + "\n" + remark.getText();
+    }
+
+    /**
+     * Sets for the remarks of earlier review rounds whether the reviewed changes change their code, so
+     * that the reviewer sees which remarks to verify (see {@link #verificationHint}).
+     */
+    void setChangedNearby(Map<String, Boolean> changed, boolean fixing) {
+        this.changedNearby = changed;
+        this.fixingMode = fixing;
+        this.tree.repaint();
+    }
+
+    /**
+     * Compares the state the author set with the changes near the remark (package-private for tests):
+     * "fixed" without a change nearby deserves a check, "open" with a change nearby may be fixed.
+     * Returns null if there is nothing to point out.
+     *
+     * @param changed Whether the reviewed changes change the remark's code, or null if unknown.
+     */
+    static String verificationHint(ResolutionType resolution, Boolean changed) {
+        if (changed == null) {
+            return null;
+        }
+        switch (resolution) {
+        case FIXED:
+            return changed ? "code changed nearby" : "no change nearby - check";
+        case OPEN:
+            return changed ? "code changed nearby - fixed?" : null;
+        default:
+            return null;
+        }
+    }
+
     private static String toHtmlTooltip(ReviewRemark remark) {
         final StringBuilder sb = new StringBuilder("<html>");
         for (final ReviewRemarkComment c : remark.getComments()) {
@@ -492,7 +537,7 @@ public final class ReviewRemarksPanel extends JPanel {
     /**
      * Renderer for categories, remarks and comments.
      */
-    private static final class RemarkRenderer extends ColoredTreeCellRenderer {
+    private final class RemarkRenderer extends ColoredTreeCellRenderer {
         private static final long serialVersionUID = 1L;
 
         @Override
@@ -560,6 +605,14 @@ public final class ReviewRemarksPanel extends JPanel {
                 break;
             }
             this.append("  round " + r.round, SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
+            final boolean noHint = ReviewRemarksPanel.this.fixingMode
+                    || remark.getRemarkType() == RemarkType.ALREADY_FIXED;
+            final String hint = noHint ? null
+                    : verificationHint(remark.getResolution(), ReviewRemarksPanel.this.changedNearby.get(key(remark)));
+            if (hint != null) {
+                this.append("  \u00B7 " + hint, hint.endsWith("check") ? WONT_FIX_ATTRIBUTES
+                        : hint.endsWith("?") ? QUESTION_ATTRIBUTES : SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
+            }
             this.setToolTipText(toHtmlTooltip(remark));
         }
     }

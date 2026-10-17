@@ -138,6 +138,8 @@ public final class ReviewToursPanel extends JPanel {
     private Consumer<Stop> explainListener;
     private Consumer<Stop> suggestRemarksListener;
     private Runnable progressListener;
+    /** The stops of a later review round that do not belong to a remark of the earlier rounds (or null). */
+    private java.util.Set<Stop> unrequestedStops;
     /** The risks of the stops as rated by the AI, for the tours {@link #aiRiskTours}. */
     private Map<Stop, ReviewAiPrompts.StopRisk> aiRisks = Collections.emptyMap();
     private ToursInReview aiRiskTours;
@@ -353,6 +355,9 @@ public final class ReviewToursPanel extends JPanel {
         if (tour != null) {
             sb.append(" &nbsp;&middot; Tour: ").append(escape(firstLine(tour.getDescription())));
         }
+        if (this.isUnrequested(stop)) {
+            sb.append(" &nbsp;&middot; not requested by a remark of the earlier rounds");
+        }
         final ReviewAiPrompts.StopRisk risk = this.getAiRisk(stop);
         if (risk != null) {
             sb.append(" &nbsp;&middot; AI hint (unchecked): ").append(risk.getRisk()).append(" risk");
@@ -509,6 +514,20 @@ public final class ReviewToursPanel extends JPanel {
         this.aiRisks = risks;
         this.tree.repaint();
         this.updateDetails();
+    }
+
+    /**
+     * Sets the stops of a later review round that do not belong to a remark of the earlier rounds (null if
+     * that is not known or not meaningful, e.g. in the first round).
+     */
+    void setUnrequestedStops(java.util.Set<Stop> stops) {
+        this.unrequestedStops = stops;
+        this.tree.repaint();
+        this.updateDetails();
+    }
+
+    boolean isUnrequested(Stop stop) {
+        return this.unrequestedStops != null && this.unrequestedStops.contains(stop);
     }
 
     /**
@@ -1094,6 +1113,9 @@ public final class ReviewToursPanel extends JPanel {
                         ? "checked" : ReviewToursPanel.this.visitedLabel(stop));
                 if (irrelevant) {
                     state.append(", irrelevant");
+                }
+                if (ReviewToursPanel.this.isUnrequested(stop)) {
+                    state.append(", not requested by a remark");
                 }
                 this.append(state.toString(), SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
                 final ReviewAiPrompts.StopRisk risk = ReviewToursPanel.this.getAiRisk(stop);
