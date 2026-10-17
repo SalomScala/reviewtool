@@ -216,6 +216,8 @@ final class ReviewAiPanel extends JPanel {
     private transient BiConsumer<ToursInReview, Map<Stop, StopRisk>> riskListener = (t, r) -> { };
     /** The stops the answers of the current conversation refer to (to save them with the answers). */
     private transient Map<Stop, StopForAi> conversationStops;
+    /** Returns why the changes have been made (ticket description, commit messages), or null if unknown. */
+    private transient Supplier<String> rationale = () -> null;
     /** Is called when the answers to save have changed. */
     private transient Runnable historyListener = () -> { };
     /** True while saved answers are shown again (they must not be saved again then). */
@@ -342,6 +344,14 @@ final class ReviewAiPanel extends JPanel {
     void setReviewerProgress(Predicate<Stop> lookedAt, IntSupplier relevantStopsNotLookedAt) {
         this.lookedAt = lookedAt;
         this.relevantStopsNotLookedAt = relevantStopsNotLookedAt;
+    }
+
+    /**
+     * Sets the source of the rationale of the changes (the ticket description and the commit messages),
+     * which is sent to the model with the changes.
+     */
+    void setRationale(Supplier<String> rationale) {
+        this.rationale = rationale;
     }
 
     /**
@@ -509,6 +519,7 @@ final class ReviewAiPanel extends JPanel {
         }
         this.setBusy(true);
         final String reviewName = this.reviewTitle.get();
+        final String rationaleText = this.rationale.get();
         final String model = Objects.toString(ReviewToolSettings.getInstance(this.project).getState().aiModel, "");
         final String about = kind == Kind.REMARKS ? " for " : " of ";
         final String fullTitle = stop == null ? title
@@ -526,8 +537,8 @@ final class ReviewAiPanel extends JPanel {
                     final StringBuilder text = new StringBuilder();
                     int omitted = 0;
                     if (!ReviewAiPanel.this.changesSent) {
-                        final ReviewAiPrompts.Context context = ReviewAiPrompts.reviewContext(
-                                reviewName, new ArrayList<>(stops.values()), ReviewAiPrompts.MAX_CONTEXT_CHARS);
+                        final ReviewAiPrompts.Context context = ReviewAiPrompts.reviewContext(reviewName,
+                                rationaleText, new ArrayList<>(stops.values()), ReviewAiPrompts.MAX_CONTEXT_CHARS);
                         omitted = context.getOmittedDiffs();
                         text.append(context.getText()).append("\n---\n\n");
                     }

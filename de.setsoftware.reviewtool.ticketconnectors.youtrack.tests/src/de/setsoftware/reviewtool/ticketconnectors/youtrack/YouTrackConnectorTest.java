@@ -175,6 +175,19 @@ public class YouTrackConnectorTest {
     }
 
     @Test
+    public void testDescription() {
+        this.server.createContext("/api/issues/TIC-3", (exchange) -> {
+            assertTrue(exchange.getRequestURI().getQuery().contains("fields=description"));
+            respond(exchange, 200, "{\"description\":\"Customers need the sum.\\nSee DEMO-1.\"}");
+        });
+        this.server.createContext("/api/issues/TIC-4", (exchange) -> {
+            respond(exchange, 200, "{\"description\":null}");
+        });
+        assertEquals("Customers need the sum.\nSee DEMO-1.", this.createConnector().loadDescription("TIC-3"));
+        assertEquals("", this.createConnector().loadDescription("TIC-4"));
+    }
+
+    @Test
     public void testServerErrorWithDescription() {
         this.server.createContext("/api/issues/TIC-2", (exchange) -> {
             respond(exchange, 500, "{\"error\":\"server_error\",\"error_description\":\"database down\"}");

@@ -313,6 +313,30 @@ Dreizehnte Runde (Abdeckung, Größe und Risikohinweise; Grundlage: Literaturrec
   eine leere Zeile, die CoRTs Zerlegung in Zeilen nicht kennt. Solche Zeilen gelten jetzt als leer (auch in den
   Diff-Ausschnitten der Stops).
 
+Vierzehnte Runde (Folgerunden und Begründung; Grundlage: Literaturrecherche):
+
+- **Prüfhinweise pro Anmerkung:** Der „Remarks“-Tab zeigt bei jeder Anmerkung einer früheren Runde, ob die
+  reviewten Änderungen ihre Zeile (±1) berühren: „code changed nearby“ bei einer als erledigt markierten Anmerkung,
+  „no change nearby - check“ (orange), wenn bei einer erledigten Anmerkung nichts geändert wurde, und „code changed
+  nearby - fixed?“ bei einer noch offenen. Die ±1-Zeilen-Heuristik hatte bei Bosu et al. (MSR 2015) 88 % Präzision für
+  „Anmerkung wurde umgesetzt“. Im Fixing-Modus gibt es die Hinweise nicht.
+- **Nicht angeforderte Änderungen:** Ab der zweiten Runde markiert der „Tours“-Tab Stops, die in keiner Datei mit
+  Anmerkung liegen bzw. keine Anmerkung früherer Runden in ihrer Nähe (±1 Zeile) haben, mit „not requested by a
+  remark“ (auch in den Stop-Details). 60–81 % der Änderungen in Folgerunden sind nicht von Anmerkungen ausgelöst
+  (Fregnan et al., EMSE 2022) und bekommen sonst wenig Aufmerksamkeit. Eine Anmerkung ohne Zeile gilt für die ganze
+  Datei.
+- **Begründung zuerst:** Der „Summary“-Tab zeigt oben „Why“: das Ticket mit seiner Beschreibung aus YouTrack
+  (`YouTrackConnector.loadDescription`, Markdown wird dargestellt) und die Nachrichten der reviewten Commits. Hat das
+  Ticket keine Beschreibung, steht dort, dass der Grund nicht angegeben ist. Die Höhe passt sich dem Text an, lange
+  Beschreibungen bekommen einen Scrollbalken. Fehlende Begründung ist die häufigste Ursache für Verwirrung im Review
+  (Ebert et al., EMSE 2021), Begründung gehört zu den zentralen Informationsbedürfnissen (Pascarella et al., CSCW 2018).
+- **KI:** Beschreibung (auf 3000 Zeichen gekürzt) und Commit-Nachrichten gehen mit in den Kontext; die Zusammenfassung
+  beginnt mit dem „Warum“ laut Ticket und Commits (oder sagt, dass es nicht angegeben ist, statt zu raten) und trennt
+  es vom „Was“.
+- In 2026.2.3 mit DEMO-2 (Runde 2, alle Commits) durchgespielt: die beiden Stops ohne Anmerkung in der Nähe sind
+  markiert, die erledigte Javadoc-Anmerkung zeigt „code changed nearby“, die offene Stream-Anmerkung „code changed
+  nearby - fixed?“, der „Summary“-Tab die Beschreibung und beide Commits, und die KI-Anfrage enthält beides.
+
 ## Gefundene und behobene Fehler
 
 - **„Continue review“ fehlte nach einem Absturz** (beim Test der achten Runde gefunden): Das nicht beendete Ticket

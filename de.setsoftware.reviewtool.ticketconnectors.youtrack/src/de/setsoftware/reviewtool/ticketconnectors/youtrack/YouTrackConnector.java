@@ -344,6 +344,16 @@ public class YouTrackConnector implements ITicketConnector {
         return name == null || name.isNull() ? "" : name.asString();
     }
 
+    /**
+     * Loads the description of the ticket (the rationale of the changes, e.g. for the reviewer). Returns an
+     * empty string if the ticket has no description.
+     */
+    public String loadDescription(String ticketKey) {
+        final JsonValue result = this.performGet(String.format(
+                "%s/api/issues/%s?fields=description", this.url, ticketKey));
+        return result != null && result.isObject() ? this.asStringOrEmpty(result.asObject().get("description")) : "";
+    }
+
     @Override
     public ITicketData loadTicket(String ticketKey) {
         final String getUrl = String.format(
