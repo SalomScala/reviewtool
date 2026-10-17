@@ -9,8 +9,12 @@ import java.awt.event.MouseEvent;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -40,6 +44,7 @@ import com.intellij.openapi.project.DumbAwareToggleAction;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.ui.ColorUtil;
 import com.intellij.ui.ColoredTreeCellRenderer;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.JBSplitter;
@@ -143,6 +148,10 @@ public final class ReviewToursPanel extends JPanel {
     /** The risks of the stops as rated by the AI, for the tours {@link #aiRiskTours}. */
     private Map<Stop, ReviewAiPrompts.StopRisk> aiRisks = Collections.emptyMap();
     private ToursInReview aiRiskTours;
+    /** The context of the stops per tours (computed in the background after the tours were created). */
+    private final Map<ToursInReview, StopContext> stopContexts = new WeakHashMap<>();
+    /** The targets of the links in the shown context: stops and paths of files. */
+    private final List<Object> contextLinks = new ArrayList<>();
     private int lastNotVisitedCount = -1;
     private boolean hideIrrelevant;
     private boolean hideChecked;
@@ -161,6 +170,7 @@ public final class ReviewToursPanel extends JPanel {
                 project, () -> this.tours, this::localChangesApplied, this.disposable);
         this.localChangeTracker.setEnabled(PropertiesComponent.getInstance().getBoolean(TRACK_LOCAL_CHANGES_KEY, true));
         this.detailsPanel = new StopDetailsPanel(project, this.disposable);
+        this.detailsPanel.setLinkListener(this::contextLinkActivated);
         // side by side, because the tool window is usually wide and flat at the bottom of the IDE
         this.treeAndDetails = new JBSplitter(false, "de.setsoftware.reviewtool.toursSplitter", 0.45f);
         final PropertiesComponent properties = PropertiesComponent.getInstance();
@@ -339,6 +349,142 @@ public final class ReviewToursPanel extends JPanel {
             stop = this.currentStop;
         }
         this.detailsPanel.showStop(stop, stop == null ? null : this.describe(stop));
+        this.detailsPanel.setContext(stop == null ? null : this.contextHtml(stop));
+    }
+
+    /**
+     * The context of the stop as HTML (null if it is unknown): the changed declarations, the refactorings
+     * it is part of, the stops it calls and is called from, and the tests that use it.
+     */
+    private String contextHtml(Stop stop) {
+        this.contextLinks.clear();
+        final StopContext context = this.getStopContext();
+        final StopAnalysis.Info info = context == null ? null : context.get(stop);
+        if (info == null) {
+            return null;
+        }
+        final StringBuilder sb = new StringBuilder();
+        if (!info.getDeclarations().isEmpty()) {
+            contextLine(sb, "Changes", escape(String.join(", ", info.getDeclarations())));
+        }
+        if (!info.getRefactorings().isEmpty()) {
+            contextLine(sb, info.isRefactoringOnly() ? "Refactoring only" : "Part of a refactoring",
+                    escape(String.join("; ", info.getRefactorings()))
+                    + (info.isRefactoringOnly() ? " &ndash; all changed lines are explained by it" : ""));
+        }
+        this.contextLinks(sb, "Calls", info.getCalls());
+        this.contextLinks(sb, "Called from", info.getCalledBy());
+        if (info.isTest()) {
+            this.contextLinks(sb, "Tests", info.getTested());
+        } else {
+            this.contextLinks(sb, "Tested by", info.getTests());
+            this.testsOutsideReview(sb, context, info);
+        }
+        return sb.toString();
+    }
+
+    private static void contextLine(StringBuilder sb, String label, String html) {
+        sb.append("<b>").append(label).append(":</b> ").append(html).append("<br>");
+    }
+
+    private void contextLinks(StringBuilder sb, String label, List<StopAnalysis.Link> links) {
+        if (links.isEmpty()) {
+            return;
+        }
+        final Map<String, List<Stop>> byName = new LinkedHashMap<>();
+        for (final StopAnalysis.Link link : links) {
+            final List<Stop> stops = byName.computeIfAbsent(link.getText(), (k) -> new ArrayList<>());
+            if (!stops.contains(link.getTarget())) {
+                stops.add((Stop) link.getTarget());
+            }
+        }
+        final List<String> parts = new ArrayList<>();
+        for (final Map.Entry<String, List<Stop>> e : byName.entrySet()) {
+            final List<String> stopLinks = new ArrayList<>();
+            for (final Stop target : e.getValue()) {
+                stopLinks.add(this.link(target, stopLabel(target)));
+            }
+            parts.add(escape(e.getKey()) + " (" + String.join(", ", stopLinks) + ")");
+        }
+        contextLine(sb, label, String.join(", ", parts));
+    }
+
+    /**
+     * Adds the tests outside of the review that use the types of a production stop, or a hint if no test
+     * uses them at all.
+     */
+    private void testsOutsideReview(StringBuilder sb, StopContext context, StopAnalysis.Info info) {
+        if (info.getTypeNames().isEmpty()) {
+            return;
+        }
+        final Set<String> outside = new LinkedHashSet<>();
+        boolean known = true;
+        for (final String type : info.getTypeNames()) {
+            final List<String> tests = context.getTestsOutsideReview(type);
+            if (tests == null) {
+                known = false;
+            } else {
+                outside.addAll(tests);
+            }
+        }
+        if (!outside.isEmpty()) {
+            final List<String> links = new ArrayList<>();
+            for (final String path : outside) {
+                links.add(this.link(path, new File(path).getName()));
+            }
+            contextLine(sb, "Tests outside of this review", String.join(", ", links)
+                    + " &ndash; unchanged, do they still fit?");
+        } else if (known && info.getTests().isEmpty()) {
+            contextLine(sb, "Tests", "<font color=\"" + ColorUtil.toHtmlColor(MEDIUM_RISK_ATTRIBUTES.getFgColor())
+                    + "\">no test uses "
+                    + escape(String.join(", ", info.getTypeNames())) + "</font>");
+        }
+    }
+
+    private String link(Object target, String text) {
+        this.contextLinks.add(target);
+        return "<a href=\"link:" + (this.contextLinks.size() - 1) + "\">" + escape(text) + "</a>";
+    }
+
+    private void contextLinkActivated(String href) {
+        if (href == null || !href.startsWith("link:")) {
+            return;
+        }
+        final int index = Integer.parseInt(href.substring("link:".length()));
+        if (index < 0 || index >= this.contextLinks.size()) {
+            return;
+        }
+        final Object target = this.contextLinks.get(index);
+        if (target instanceof Stop) {
+            this.showStop((Stop) target);
+        } else {
+            final VirtualFile vf = IntellijFileResolver.findByAbsoluteFile(new File((String) target));
+            if (vf != null) {
+                FileEditorManager.getInstance(this.project).openFile(vf, true);
+            }
+        }
+    }
+
+    /**
+     * Sets the context of the stops (for the tours it has been computed for).
+     */
+    void setStopContext(StopContext context) {
+        this.stopContexts.put(context.getTours(), context);
+        this.tree.repaint();
+        this.updateDetails();
+        this.updateStatus();
+    }
+
+    /**
+     * The context of the stops of the shown tours, or null if it is not known (yet).
+     */
+    StopContext getStopContext() {
+        return this.tours == null ? null : this.stopContexts.get(this.tours);
+    }
+
+    private StopAnalysis.Info contextOf(Stop stop) {
+        final StopContext context = this.getStopContext();
+        return context == null ? null : context.get(stop);
     }
 
     private String describe(Stop stop) {
@@ -618,7 +764,14 @@ public final class ReviewToursPanel extends JPanel {
         for (final Tour tour : this.tours.getTopmostTours()) {
             for (final Stop stop : tour.getStops()) {
                 if (!this.isIrrelevant(stop)) {
-                    result.add(new ReviewCoverage.StopCoverage(shortDescription(stop), this.coverageState(stop)));
+                    final StopAnalysis.Info info = this.contextOf(stop);
+                    ReviewCoverage.State state = this.coverageState(stop);
+                    if (state == ReviewCoverage.State.BRIEFLY_VIEWED && info != null && info.isRefactoringOnly()) {
+                        // a quick look is enough for a stop that is only a refactoring
+                        state = ReviewCoverage.State.OK;
+                    }
+                    result.add(new ReviewCoverage.StopCoverage(
+                            shortDescription(stop) + (info != null && info.isTest() ? " (test)" : ""), state));
                 }
             }
         }
@@ -724,7 +877,36 @@ public final class ReviewToursPanel extends JPanel {
                 + (stopCount == 1 ? " stop" : " stops") + " (" + changedLines
                 + (changedLines == 1 ? " changed line" : " changed lines")
                 + (changedLines >= ReviewCoverage.LARGE_REVIEW_LINES ? " - a large review" : "")
-                + "), active tour: " + (active == null ? "-" : firstLine(active.getDescription())));
+                + ")" + this.testCoverageStatus()
+                + ", active tour: " + (active == null ? "-" : firstLine(active.getDescription())));
+    }
+
+    /**
+     * The visited share of the relevant test stops and the other stops (empty if there are no test stops or
+     * the context is not known yet), e.g. ", visited: 0/2 test stops, 3/5 others".
+     */
+    private String testCoverageStatus() {
+        if (this.getStopContext() == null) {
+            return "";
+        }
+        final int tests = this.countStops((s) -> this.isRelevantTest(s, true));
+        if (tests == 0) {
+            return "";
+        }
+        final int others = this.countStops((s) -> this.isRelevantTest(s, false));
+        final int testsVisited = this.countStops((s) -> this.isRelevantTest(s, true) && this.isDone(s));
+        final int othersVisited = this.countStops((s) -> this.isRelevantTest(s, false) && this.isDone(s));
+        return ", visited: " + testsVisited + "/" + tests + " test stops, " + othersVisited + "/" + others
+                + " others";
+    }
+
+    private boolean isRelevantTest(Stop stop, boolean test) {
+        final StopAnalysis.Info info = this.contextOf(stop);
+        return !this.isIrrelevant(stop) && info != null && info.isTest() == test;
+    }
+
+    private boolean isDone(Stop stop) {
+        return this.isChecked(stop) || this.isFullyVisited(stop);
     }
 
     private boolean isIrrelevant(Stop stop) {
@@ -1116,6 +1298,13 @@ public final class ReviewToursPanel extends JPanel {
                 }
                 if (ReviewToursPanel.this.isUnrequested(stop)) {
                     state.append(", not requested by a remark");
+                }
+                final StopAnalysis.Info info = ReviewToursPanel.this.contextOf(stop);
+                if (info != null && info.isTest()) {
+                    state.append(", test");
+                }
+                if (info != null && info.isRefactoringOnly()) {
+                    state.append(", refactoring only");
                 }
                 this.append(state.toString(), SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
                 final ReviewAiPrompts.StopRisk risk = ReviewToursPanel.this.getAiRisk(stop);
