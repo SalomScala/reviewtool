@@ -95,6 +95,8 @@ public class ReviewToolConfigurable implements Configurable {
     private StopOrderingTable stopOrderingTable;
     private JBCheckBox aiEnabledBox;
     private JBCheckBox showRemarksInEditorBox;
+    private JBCheckBox refactoringsFirstBox;
+    private JBCheckBox testsFirstBox;
     private JBTextField opencodePathField;
     private ComboBox<ModelItem> modelCombo;
     private JBLabel modelStatsLabel;
@@ -137,6 +139,9 @@ public class ReviewToolConfigurable implements Configurable {
         this.logMessagePatternField = new JBTextField();
         this.maxDiffThresholdField = new JBTextField();
         this.stopOrderingTable = new StopOrderingTable();
+        this.refactoringsFirstBox = new JBCheckBox("Stops that are only refactorings first (e.g. a renamed method and"
+                + " its calls)");
+        this.testsFirstBox = new JBCheckBox("Tests before the production code");
         this.showRemarksInEditorBox = new JBCheckBox("Show the text of the review remarks at the end of their lines in the editor");
         this.aiEnabledBox = new JBCheckBox("Enable AI support via opencode (summary of the changes, explanations of stops)");
         this.opencodePathField = new JBTextField();
@@ -209,6 +214,10 @@ public class ReviewToolConfigurable implements Configurable {
                 .addComponent(new JBLabel("<html>The active relations are used (in this priority order) to group"
                         + " and sort the stops when the tours are created.</html>"))
                 .addComponent(this.stopOrderingTable.getComponent())
+                .addComponent(this.refactoringsFirstBox)
+                .addComponent(this.testsFirstBox)
+                .addComponent(hint("<html>They are moved to the front of their group; the groups stay together."
+                        + " Applies to tours created afterwards (\"Create Tours\").</html>"))
                 .addComponentFillVertically(new JPanel(), 0)
                 .getPanel();
         return this.panel;
@@ -407,6 +416,8 @@ public class ReviewToolConfigurable implements Configurable {
                 || !this.stopOrderingTable.getSettings().equals(StopOrderingSettings.normalize(s.stopOrdering))
                 || this.aiEnabledBox.isSelected() != s.aiEnabled
                 || this.showRemarksInEditorBox.isSelected() != s.showRemarksInEditor
+                || this.refactoringsFirstBox.isSelected() != s.refactoringStopsFirst
+                || this.testsFirstBox.isSelected() != s.testStopsFirst
                 || !this.opencodePathField.getText().trim().equals(s.opencodePath)
                 || !this.getSelectedModel().equals(Objects.toString(s.aiModel, ""))
                 || this.aiAfterOwnReviewBox.isSelected() != s.aiSuggestionsAfterOwnReview;
@@ -446,6 +457,8 @@ public class ReviewToolConfigurable implements Configurable {
         s.stopOrdering = this.stopOrderingTable.getSettings();
         s.aiEnabled = this.aiEnabledBox.isSelected();
         s.showRemarksInEditor = this.showRemarksInEditorBox.isSelected();
+        s.refactoringStopsFirst = this.refactoringsFirstBox.isSelected();
+        s.testStopsFirst = this.testsFirstBox.isSelected();
         s.opencodePath = this.opencodePathField.getText().trim();
         s.aiModel = this.getSelectedModel();
         s.aiSuggestionsAfterOwnReview = this.aiAfterOwnReviewBox.isSelected();
@@ -472,6 +485,8 @@ public class ReviewToolConfigurable implements Configurable {
         this.stopOrderingTable.setSettings(s.stopOrdering);
         this.aiEnabledBox.setSelected(s.aiEnabled);
         this.showRemarksInEditorBox.setSelected(s.showRemarksInEditor);
+        this.refactoringsFirstBox.setSelected(s.refactoringStopsFirst);
+        this.testsFirstBox.setSelected(s.testStopsFirst);
         this.opencodePathField.setText(s.opencodePath);
         this.showModels(OpencodeServer.getInstance(this.project).getLastProbe(), Objects.toString(s.aiModel, ""));
         this.aiAfterOwnReviewBox.setSelected(s.aiSuggestionsAfterOwnReview);

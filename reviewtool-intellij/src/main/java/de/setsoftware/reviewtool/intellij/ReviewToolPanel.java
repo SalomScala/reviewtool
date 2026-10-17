@@ -1286,6 +1286,10 @@ public class ReviewToolPanel extends JPanel implements Disposable {
             this.toursChoices = this.parkedToursChoices;
             this.toursPanel.setTours(this.parkedWorkingTours);
             this.summaryPanel.setTours(this.parkedWorkingTours);
+            final StopContext context = this.toursPanel.getStopContext();
+            if (context != null) {
+                this.summaryPanel.setStopContext(context);
+            }
             this.parkedWorkingTours = null;
             this.parkedToursChoices = null;
         }
@@ -1632,6 +1636,7 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                         ReviewToolPanel.this.toursChoices = choices;
                         ReviewToolPanel.this.toursPanel.setTours(tours);
                         ReviewToolPanel.this.summaryPanel.setTours(tours);
+                        ReviewToolPanel.this.loadStopContext(tours);
                         ReviewToolPanel.this.rightTabs.setSelectedIndex(TAB_TOURS);
                         ReviewToolPanel.this.toursCreated(key, tours, saved);
                         if (ReviewToolPanel.this.remarkMarkersShown) {
@@ -1649,6 +1654,31 @@ public class ReviewToolPanel extends JPanel implements Disposable {
                     throw e;
                 } catch (final RuntimeException e) {
                     ReviewToolPanel.this.showError("Could not create tours for " + key, e);
+                }
+            }
+        }.queue();
+    }
+
+    /**
+     * Analyzes the stops of the tours in the background (calls between them, tests, refactorings) and shows
+     * the result in the "Tours" and "Summary" tabs.
+     */
+    private void loadStopContext(ToursInReview tours) {
+        new Task.Backgroundable(this.project, "Analyzing the review stops", true) {
+            @Override
+            public void run(ProgressIndicator indicator) {
+                try {
+                    final StopContext context = StopContext.load(
+                            ReviewToolPanel.this.project, tours, indicator::isCanceled);
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        ReviewToolPanel.this.toursPanel.setStopContext(context);
+                        ReviewToolPanel.this.summaryPanel.setStopContext(context);
+                    });
+                } catch (final ProcessCanceledException e) {
+                    throw e;
+                } catch (final RuntimeException e) {
+                    // the context is optional, the review works without it
+                    Logger.warn("could not analyze the review stops", e);
                 }
             }
         }.queue();

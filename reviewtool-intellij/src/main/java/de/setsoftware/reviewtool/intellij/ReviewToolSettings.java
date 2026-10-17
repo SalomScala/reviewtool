@@ -51,6 +51,10 @@ public final class ReviewToolSettings implements PersistentStateComponent<Review
         public String aiModel = "";
         /** True iff the text of the review remarks is shown at the end of their lines in the editor. */
         public boolean showRemarksInEditor = true;
+        /** True iff the stops that are only refactorings come first in their group. */
+        public boolean refactoringStopsFirst = true;
+        /** True iff the tests come before the production code in their group. */
+        public boolean testStopsFirst;
     }
 
     private static final CredentialAttributes TOKEN_ATTRIBUTES =

@@ -2,8 +2,11 @@ package de.setsoftware.reviewtool.intellij;
 
 import java.awt.BorderLayout;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
+import javax.swing.JEditorPane;
 import javax.swing.JPanel;
+import javax.swing.event.HyperlinkEvent;
 
 import com.intellij.diff.DiffManager;
 import com.intellij.diff.DiffRequestPanel;
@@ -13,14 +16,17 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.ui.components.JBCheckBox;
 import com.intellij.ui.components.JBLabel;
+import com.intellij.util.ui.HTMLEditorKitBuilder;
 import com.intellij.util.ui.JBUI;
+import com.intellij.util.ui.UIUtil;
 
 import de.setsoftware.reviewtool.base.Logger;
 import de.setsoftware.reviewtool.model.changestructure.Stop;
 
 /**
  * Shows details of the selected review stop below the tours: a short description (file, lines,
- * classification, visit state) and the diff of the stop's file, scrolled to the stop. By default, the
+ * classification, visit state), its context (e.g. the stops it calls and the tests that use it) and the
+ * diff of the stop's file, scrolled to the stop. By default, the
  * diff only contains the changed sections of the stop (with some context) instead of the whole file.
  * This is the IntelliJ counterpart of the Eclipse "Review stop info" view with its combined diff viewer.
  */
@@ -30,6 +36,10 @@ final class StopDetailsPanel extends JPanel {
 
     private final transient Project project;
     private final JBLabel header = new JBLabel();
+    /** The context of the stop, with links to other stops ("stop:...") and files ("file:..."). */
+    private final JEditorPane context = new JEditorPane();
+    private transient Consumer<String> linkListener;
+    private String shownContext = "";
     private final JBCheckBox onlyStopChanges = new JBCheckBox("Only the stop's changes");
     private final transient DiffRequestPanel diffPanel;
     private final AtomicInteger request = new AtomicInteger();
@@ -51,12 +61,48 @@ final class StopDetailsPanel extends JPanel {
             StopDiffViewer.setOnlyStopChanges(this.onlyStopChanges.isSelected());
             this.showLoadedDiff();
         });
+        this.context.setEditable(false);
+        this.context.setEditorKit(new HTMLEditorKitBuilder().withWordWrapViewFactory().build());
+        this.context.setBackground(UIUtil.getPanelBackground());
+        this.context.setBorder(JBUI.Borders.empty(0, 4, 4, 4));
+        this.context.setVisible(false);
+        this.context.addHyperlinkListener((e) -> {
+            if (e.getEventType() == HyperlinkEvent.EventType.ACTIVATED && this.linkListener != null) {
+                this.linkListener.accept(e.getDescription());
+            }
+        });
+        final JPanel headerLine = new JPanel(new BorderLayout());
+        headerLine.add(this.header, BorderLayout.CENTER);
+        headerLine.add(this.onlyStopChanges, BorderLayout.EAST);
         final JPanel north = new JPanel(new BorderLayout());
-        north.add(this.header, BorderLayout.CENTER);
-        north.add(this.onlyStopChanges, BorderLayout.EAST);
+        north.add(headerLine, BorderLayout.NORTH);
+        north.add(this.context, BorderLayout.CENTER);
         this.add(north, BorderLayout.NORTH);
         this.add(this.diffPanel.getComponent(), BorderLayout.CENTER);
         this.showStop(null, null);
+    }
+
+    /**
+     * Sets the action for the links in the context (it gets the link target, e.g. "stop:3").
+     */
+    void setLinkListener(Consumer<String> listener) {
+        this.linkListener = listener;
+    }
+
+    /**
+     * Shows the context of the stop (HTML body content), or hides it if it is null or empty.
+     */
+    void setContext(String html) {
+        final boolean visible = html != null && !html.isEmpty();
+        final String text = visible ? "<html><body>" + html + "</body></html>" : "";
+        // setting the same text again would reset the scroll position and flicker
+        if (!text.equals(this.shownContext)) {
+            this.shownContext = text;
+            this.context.setText(text);
+            this.context.setCaretPosition(0);
+            this.context.setVisible(visible);
+            this.revalidate();
+        }
     }
 
     Stop getShownStop() {

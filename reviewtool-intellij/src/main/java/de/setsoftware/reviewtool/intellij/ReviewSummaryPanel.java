@@ -8,6 +8,8 @@ import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.io.File;
+import java.util.ArrayList;
 import java.util.List;
 
 import javax.swing.Icon;
@@ -103,6 +105,8 @@ public final class ReviewSummaryPanel extends JPanel {
     private final Tree tree = new Tree(this.treeModel);
 
     private transient ToursInReview tours;
+    private transient SummaryResult lastResult;
+    private transient StopContext stopContext;
     private transient Runnable aiSummaryListener;
     /** Shows why the changes have been made: the ticket and its description, and the commit messages. */
     private final JEditorPane rationalePane = new JEditorPane();
@@ -260,7 +264,18 @@ public final class ReviewSummaryPanel extends JPanel {
         }.queue();
     }
 
+    /**
+     * Sets the context of the stops (computed in the background), which adds the "Tests" overview.
+     */
+    void setStopContext(StopContext context) {
+        this.stopContext = context;
+        if (this.lastResult != null) {
+            this.showResult(this.lastResult);
+        }
+    }
+
     private void showResult(SummaryResult result) {
+        this.lastResult = result;
         this.treeRoot.removeAllChildren();
         if (result == null) {
             this.treeRoot.setUserObject(new SummaryNode(Kind.OVERVIEW,
@@ -281,6 +296,7 @@ public final class ReviewSummaryPanel extends JPanel {
                 }
                 this.treeRoot.add(refactorings);
             }
+            this.addTestOverview();
             for (final FileItem file : result.getFiles()) {
                 final String counts = file.isBinary()
                         ? "(binary)"
@@ -296,6 +312,53 @@ public final class ReviewSummaryPanel extends JPanel {
         }
         this.treeModel.reload();
         TreeUtil.expandAll(this.tree);
+    }
+
+    /**
+     * Adds the "Tests" overview: the changed tests, and the changed production code without a changed test
+     * (with the tests outside of the review that use it, if there are any).
+     */
+    private void addTestOverview() {
+        final StopContext context = this.stopContext;
+        if (context == null || context.getTours() != this.tours) {
+            return;
+        }
+        final List<StopContext.FileTests> files = context.testsPerFile();
+        final DefaultMutableTreeNode group = new DefaultMutableTreeNode();
+        int changedTests = 0;
+        int untested = 0;
+        for (final StopContext.FileTests file : files) {
+            final String details;
+            if (file.isTest()) {
+                changedTests++;
+                details = file.getTested().isEmpty() ? "(changed test)"
+                        : "(changed test of " + String.join(", ", file.getTested()) + ")";
+            } else if (file.getTestsInReview().isEmpty()) {
+                untested++;
+                if (!file.getTestsOutside().isEmpty()) {
+                    final List<String> names = new ArrayList<>();
+                    for (final String path : file.getTestsOutside()) {
+                        names.add(new File(path).getName());
+                    }
+                    details = "(no changed test; unchanged tests: " + String.join(", ", names) + ")";
+                } else {
+                    details = file.isOutsideKnown() ? "(no test uses " + String.join(", ", file.getTypes()) + ")"
+                            : "(no changed test)";
+                }
+            } else {
+                details = "(tested by " + String.join(", ", file.getTestsInReview()) + ")";
+            }
+            group.add(new DefaultMutableTreeNode(new SummaryNode(
+                    Kind.FILE, this.relativize(file.getPath()), details, file.getPath(), 0)));
+        }
+        if (group.getChildCount() == 0) {
+            return;
+        }
+        group.setUserObject(new SummaryNode(Kind.GROUP, "Tests", "(" + changedTests
+                + (changedTests == 1 ? " changed test, " : " changed tests, ") + untested
+                + (untested == 1 ? " changed production file" : " changed production files")
+                + " without a changed test)", null, 0));
+        this.treeRoot.add(group);
     }
 
     /**
