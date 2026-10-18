@@ -97,6 +97,8 @@ public class ReviewToolConfigurable implements Configurable {
     private JBCheckBox showRemarksInEditorBox;
     private JBCheckBox refactoringsFirstBox;
     private JBCheckBox testsFirstBox;
+    private ComboBox<StopContext.Order> orderCombo;
+    private JBCheckBox securityHintsBox;
     private JBTextField opencodePathField;
     private ComboBox<ModelItem> modelCombo;
     private JBLabel modelStatsLabel;
@@ -142,6 +144,9 @@ public class ReviewToolConfigurable implements Configurable {
         this.refactoringsFirstBox = new JBCheckBox("Stops that are only refactorings first (e.g. a renamed method and"
                 + " its calls)");
         this.testsFirstBox = new JBCheckBox("Tests before the production code");
+        this.orderCombo = new ComboBox<>(StopContext.Order.values());
+        this.securityHintsBox = new JBCheckBox("Security hints: an attack scenario for each risky API used in the"
+                + " changed lines (SQL, commands, input, files, XML, ...)");
         this.showRemarksInEditorBox = new JBCheckBox("Show the text of the review remarks at the end of their lines in the editor");
         this.aiEnabledBox = new JBCheckBox("Enable AI support via opencode (summary of the changes, explanations of stops)");
         this.opencodePathField = new JBTextField();
@@ -216,8 +221,14 @@ public class ReviewToolConfigurable implements Configurable {
                 .addComponent(this.stopOrderingTable.getComponent())
                 .addComponent(this.refactoringsFirstBox)
                 .addComponent(this.testsFirstBox)
+                .addLabeledComponent("Then:", this.orderCombo)
                 .addComponent(hint("<html>They are moved to the front of their group; the groups stay together."
                         + " Applies to tours created afterwards (\"Create Tours\").</html>"))
+                .addComponent(new TitledSeparator("Review Hints"))
+                .addComponent(this.securityHintsBox)
+                .addComponent(hint("<html>A checklist per path pattern can be put into .cort/review-checklist.md:"
+                        + " a heading with glob patterns<br>(e.g. \"## **/persistence/**, *.sql\") followed by the"
+                        + " questions as a list. They are shown in the stop details.</html>"))
                 .addComponentFillVertically(new JPanel(), 0)
                 .getPanel();
         return this.panel;
@@ -418,6 +429,8 @@ public class ReviewToolConfigurable implements Configurable {
                 || this.showRemarksInEditorBox.isSelected() != s.showRemarksInEditor
                 || this.refactoringsFirstBox.isSelected() != s.refactoringStopsFirst
                 || this.testsFirstBox.isSelected() != s.testStopsFirst
+                || this.orderCombo.getItem() != StopContext.Order.parse(s.stopOrderWithinGroups)
+                || this.securityHintsBox.isSelected() != s.securityHints
                 || !this.opencodePathField.getText().trim().equals(s.opencodePath)
                 || !this.getSelectedModel().equals(Objects.toString(s.aiModel, ""))
                 || this.aiAfterOwnReviewBox.isSelected() != s.aiSuggestionsAfterOwnReview;
@@ -459,6 +472,8 @@ public class ReviewToolConfigurable implements Configurable {
         s.showRemarksInEditor = this.showRemarksInEditorBox.isSelected();
         s.refactoringStopsFirst = this.refactoringsFirstBox.isSelected();
         s.testStopsFirst = this.testsFirstBox.isSelected();
+        s.stopOrderWithinGroups = this.orderCombo.getItem().name();
+        s.securityHints = this.securityHintsBox.isSelected();
         s.opencodePath = this.opencodePathField.getText().trim();
         s.aiModel = this.getSelectedModel();
         s.aiSuggestionsAfterOwnReview = this.aiAfterOwnReviewBox.isSelected();
@@ -487,6 +502,8 @@ public class ReviewToolConfigurable implements Configurable {
         this.showRemarksInEditorBox.setSelected(s.showRemarksInEditor);
         this.refactoringsFirstBox.setSelected(s.refactoringStopsFirst);
         this.testsFirstBox.setSelected(s.testStopsFirst);
+        this.orderCombo.setItem(StopContext.Order.parse(s.stopOrderWithinGroups));
+        this.securityHintsBox.setSelected(s.securityHints);
         this.opencodePathField.setText(s.opencodePath);
         this.showModels(OpencodeServer.getInstance(this.project).getLastProbe(), Objects.toString(s.aiModel, ""));
         this.aiAfterOwnReviewBox.setSelected(s.aiSuggestionsAfterOwnReview);

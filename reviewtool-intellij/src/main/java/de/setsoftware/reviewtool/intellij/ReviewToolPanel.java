@@ -1621,13 +1621,14 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         // the review rounds belong to the loaded ticket (they are unknown without the remarks)
         final List<ReviewRoundInfo> rounds = key.equals(this.currentTicketKey) && this.remarksLoaded
                 ? this.reviewRounds : Collections.<ReviewRoundInfo>emptyList();
+        final String ticketText = this.ticketText(key);
         new Task.Backgroundable(this.project, "Creating review tours for " + key, true) {
             @Override
             public void run(ProgressIndicator indicator) {
                 try {
                     final ToursInReview tours = ReviewToolPanel.this.getService().createTours(
                             changes, new ChangeSourceUiAdapter(ReviewToolPanel.this.project, indicator), choices,
-                            rounds);
+                            rounds, ticketText);
                     if (tours == null) {
                         return;
                     }
@@ -2275,6 +2276,17 @@ public class ReviewToolPanel extends JPanel implements Disposable {
         final TicketInfo info = this.currentTicketInfo;
         this.summaryPanel.setRationale(info != null && info.getId().equals(key) ? key + " " + info.getSummary() : key,
                 key.equals(this.descriptionKey) ? this.ticketDescription : null, this.commitMessages(key));
+    }
+
+    /**
+     * The summary and the description of the given ticket, as far as they are known (empty otherwise).
+     */
+    private String ticketText(String key) {
+        final TicketInfo info = this.currentTicketInfo;
+        final String summary = info != null && info.getId().equals(key) ? info.getSummary() : "";
+        final String description = key.equals(this.descriptionKey) && this.ticketDescription != null
+                ? this.ticketDescription : "";
+        return summary + "\n" + description;
     }
 
     /**

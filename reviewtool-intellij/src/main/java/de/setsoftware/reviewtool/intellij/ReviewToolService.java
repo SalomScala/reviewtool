@@ -277,11 +277,22 @@ public final class ReviewToolService {
      */
     ToursInReview createTours(IChangeData changes, IChangeSourceUi ui, ICreateToursUi createToursUi,
             List<ReviewRoundInfo> reviewRounds) {
+        return this.createTours(changes, ui, createToursUi, reviewRounds, "");
+    }
+
+    /**
+     * Builds the review tours like {@link #createTours(IChangeData, IChangeSourceUi, ICreateToursUi, List)}.
+     *
+     * @param ticketText The summary and description of the ticket (for the order "closest to the ticket").
+     */
+    ToursInReview createTours(IChangeData changes, IChangeSourceUi ui, ICreateToursUi createToursUi,
+            List<ReviewRoundInfo> reviewRounds, String ticketText) {
         return ToursInReview.create(
                 ui,
                 this.createClassificationStrategies(),
-                Arrays.<ITourRestructuring>asList(new OneStopPerPartOfFileRestructuring()),
-                this.createStopOrdering(),
+                Arrays.<ITourRestructuring>asList(new OneStopPerPartOfFileRestructuring(),
+                        new IndependentPartsRestructuring(this.project)),
+                this.createStopOrdering(ticketText),
                 createToursUi,
                 changes,
                 reviewRounds);
@@ -292,12 +303,14 @@ public final class ReviewToolService {
      * relation matchers configured in the settings (by default the same ones the Eclipse UI uses when
      * nothing has been configured). This is the compute intensive clustering; it is run inside a cancelable
      * background task and falls back to a faster mode for very large change sets. Afterwards, the stops that
-     * are only refactorings (and optionally the tests) are moved to the front of their groups.
+     * are only refactorings (and optionally the tests) are moved to the front of their groups, and the groups
+     * are sorted by the chosen order.
      */
-    private IStopOrdering createStopOrdering() {
+    private IStopOrdering createStopOrdering(String ticketText) {
         final SettingsState settings = this.getSettings();
         return new StopContext.Ordering(new StopOrdering(StopOrderingSettings.createMatchers(settings.stopOrdering)),
-                this.project, settings.refactoringStopsFirst, settings.testStopsFirst);
+                this.project, settings.refactoringStopsFirst, settings.testStopsFirst,
+                StopContext.Order.parse(settings.stopOrderWithinGroups), StopAnalysis.words(ticketText));
     }
 
     /**
